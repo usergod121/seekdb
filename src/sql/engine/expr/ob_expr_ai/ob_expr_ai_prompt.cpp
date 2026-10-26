@@ -53,14 +53,14 @@ int ObExprAIPrompt::calc_result_typeN(ObExprResType &type,
   if (OB_UNLIKELY(param_num < 1)) {
     ret = OB_INVALID_ARGUMENT;
   } else {
-    // template: string / text / longtext, and json for a nested prompt object
+    // template: a plain string, text or longtext; a json value is only accepted as an
+    // argument, an ai_prompt() result is meant to be fed to ai_complete()
     const ObObjType template_type = types_stack[0].get_type();
     if (ob_is_string_tc(template_type)) {
       types_stack[0].set_calc_type(ObVarcharType);
       types_stack[0].set_calc_collation_type(CS_TYPE_UTF8MB4_BIN);
-    } else if (ob_is_text_tc(template_type) || ob_is_json(template_type)) {
-      // text/longtext keep their lob type and are read as real string data at eval time,
-      // a json template (a nested AI_PROMPT result) keeps its json type
+    } else if (ob_is_text_tc(template_type)) {
+      // text/longtext keep their lob type and are read as real string data at eval time
     } else {
       ret = OB_ERR_INVALID_TYPE_FOR_OP;
     }
