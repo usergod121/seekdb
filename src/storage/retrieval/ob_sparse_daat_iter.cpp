@@ -82,7 +82,8 @@ ObSRDaaTIterImpl::ObSRDaaTIterImpl()
     buffered_relevances_(),
     next_round_iter_idxes_(),
     next_round_cnt_(0),
-    set_datum_func_(nullptr)
+    set_datum_func_(nullptr),
+    filter_is_relevance_gt_zero_(false)
 {
 }
 
@@ -129,6 +130,7 @@ int ObSRDaaTIterImpl::init(
       for (int64_t i = 0; i < dim_iters.count(); ++i) {
         next_round_iter_idxes_[i] = i;
       }
+      init_filter_shape();
     }
 
     if (OB_SUCC(ret)) {
@@ -359,6 +361,11 @@ int ObSRDaaTIterImpl::filter_on_demand(const int64_t count, const double relevan
   } else if (eval_ctx->is_vectorized()) {
     if (OB_UNLIKELY(count >= eval_ctx->max_batch_size_)) {
       ret = OB_ERR_UNEXPECTED;
+    } else if (filter_is_relevance_gt_zero_) {
+      // The pushdown match filter only tests whether the matched document has a non-zero
+      // relevance (`match_expr > 0` or `T_OP_BOOL(match_expr)`), and DaaT already summed
+      // that relevance in `relevance`, so no expression has to be evaluated here.
+      need_project = 0.0 != relevance;
     } else {
       guard.set_batch_idx(count);
       ObDatum &relevance_proj_datum = relevance_proj_expr->locate_datum_for_write(*eval_ctx);
@@ -446,6 +453,82 @@ int ObSRDaaTIterImpl::project_results(const int64_t count)
     relevance_proj_expr->set_evaluated_projected(*eval_ctx);
   }
   return ret;
+}
+
+namespace
+{
+// The pushdown match filter is normally `<match_expr> > 0`, sometimes wrapped as
+// T_OP_BOOL(<lossless cast of match_expr>).  In both shapes the filter outcome only
+// depends on the sign of the relevance value that DaaT has already collected, so the
+// per-document expression tree walk can be replaced by a comparison on that value.
+bool cast_preserves_zero(const ObExpr &expr)
+{
+  bool bret = false;
+  switch (expr.datum_meta_.get_type()) {
+    case ObDoubleType:
+    case ObFloatType:
+    case ObUDoubleType:
+    case ObUFloatType:
+    case ObNumberType:
+    case ObUNumberType:
+    case ObDecimalIntType: {
+      bret = true;
+      break;
+    }
+    default: {
+      bret = false;
+      break;
+    }
+  }
+  return bret;
+}
+
+// returns true when `expr` evaluates to `relevance` unchanged
+bool is_lossless_view_of(const ObExpr &expr, const ObExpr *relevance)
+{
+  bool bret = false;
+  if (&expr == relevance) {
+    bret = true;
+  } else if (&expr != relevance && 1 == expr.arg_cnt_ && OB_NOT_NULL(expr.args_)
+             && expr.args_[0] == relevance
+             && (T_FUN_SYS_CAST == expr.type_ || T_FUN_SYS_DEFAULT == expr.type_)) {
+    bret = cast_preserves_zero(expr);
+  }
+  return bret;
+}
+} // namespace
+
+void ObSRDaaTIterImpl::init_filter_shape()
+{
+  filter_is_relevance_gt_zero_ = false;
+  ObExpr *filter = iter_param_->filter_expr_;
+  ObExpr *relevance = iter_param_->relevance_proj_expr_;
+  ObEvalCtx *ctx = iter_param_->eval_ctx_;
+  bool matched = false;
+  int64_t argc = OB_NOT_NULL(filter) ? filter->arg_cnt_ : -1;
+  if (OB_NOT_NULL(filter) && OB_NOT_NULL(relevance) && OB_NOT_NULL(ctx)
+      && OB_NOT_NULL(filter->args_)) {
+    if (T_OP_GT == filter->type_ && 2 == argc) {
+      // <match_expr> > const_zero
+      ObExpr *lhs = filter->args_[0];
+      ObExpr *rhs = filter->args_[1];
+      if (OB_NOT_NULL(lhs) && OB_NOT_NULL(rhs) && T_INT == rhs->type_
+          && is_lossless_view_of(*lhs, relevance)) {
+        ObDatum *rhs_datum = nullptr;
+        if (OB_SUCCESS == rhs->eval(*ctx, rhs_datum) && OB_NOT_NULL(rhs_datum)
+            && !rhs_datum->is_null() && 0 == rhs_datum->get_int()) {
+          matched = true;
+        }
+      }
+    } else if (T_OP_BOOL == filter->type_ && 1 == argc) {
+      // T_OP_BOOL(<match_expr>) -- true iff the relevance value is non zero
+      ObExpr *arg = filter->args_[0];
+      if (OB_NOT_NULL(arg) && is_lossless_view_of(*arg, relevance)) {
+        matched = true;
+      }
+    }
+  }
+  filter_is_relevance_gt_zero_ = matched;
 }
 
 int ObSRDaaTIterImpl::init_merge_heap(const int64_t count)

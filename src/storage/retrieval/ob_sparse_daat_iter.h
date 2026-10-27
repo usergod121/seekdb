@@ -93,6 +93,7 @@ protected:
   virtual int cache_result(int64_t &count, const ObDatum &id_datum, const double relevance);
   virtual int project_results(const int64_t count);
   int init_merge_heap(const int64_t count);
+  void init_filter_shape();
 protected:
   ObIAllocator *iter_allocator_;
   ObSparseRetrievalMergeParam *iter_param_;
@@ -106,6 +107,10 @@ protected:
   ObFixedArray<int64_t, ObIAllocator> next_round_iter_idxes_;
   int64_t next_round_cnt_;
   void (*set_datum_func_)(ObDatum &, const ObDocIdExt &);
+  // true when the pushdown match filter is exactly `relevance > 0`, in which case the
+  // filter result is identical to a sign test on the relevance value we already hold and
+  // the generic expression evaluation can be skipped for every matched document.
+  bool filter_is_relevance_gt_zero_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObSRDaaTIterImpl);
 };
