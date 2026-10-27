@@ -158,11 +158,36 @@ bool ObAddWord::is_min_max_word(const int64_t c_len) const
   return flag_.min_max_word() && (c_len < min_token_size_ || c_len > max_token_size_);
 }
 
+namespace
+{
+// Lowercasing UTF-8 text only rewrites ASCII upper case letters and multibyte code
+// points, so a lower case word made of ASCII letters and digits can be used as it
+// is. Testing the bytes is far cheaper than copying the word into the allocator and
+// running the case table over it, and it keeps the hot path allocation free.
+bool is_casedown_noop(const common::ObString &word, const ObCollationType collation)
+{
+  bool noop = true;
+  if (ObCharsetType::CHARSET_UTF8MB4 != common::ObCharset::charset_type_by_coll(collation)) {
+    noop = false;
+  } else {
+    const unsigned char *bytes = reinterpret_cast<const unsigned char *>(word.ptr());
+    for (int64_t i = 0; noop && i < word.length(); ++i) {
+      const unsigned char byte = bytes[i];
+      noop = byte < 0x80 && (byte < 'A' || byte > 'Z');
+    }
+  }
+  return noop;
+}
+} // namespace
+
 int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
 {
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(src.empty())) {
     ret = OB_INVALID_ARGUMENT;
+  } else if (flag_.casedown() && is_casedown_noop(src.get_word().get_string(),
+                                                 word_meta_.get_collation_type())) {
+    dst = src;
   } else if (flag_.casedown()) {
     ObString dst_str;
     if (OB_FAIL(ObCharset::tolower(

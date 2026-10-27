@@ -19,6 +19,7 @@
 
 #include "lib/allocator/ob_fifo_allocator.h"
 #include "lib/charset/ob_charset.h"
+#include "lib/lock/ob_spin_lock.h"
 #include "lib/string/ob_string.h"
 #include "object/ob_object.h"
 #include "data_plane/fts/ob_fts_parser.h"
@@ -39,6 +40,8 @@ namespace storage
 class ObStopWordChecker;
 class ObFTDictHub;
 class ObAddWord;
+class ObFTCacheRangeContainer;
+class ObIFTDict;
 
 #define FTS_BUILD_IN_PARSER_LIST                                                                   \
   FT_PARSER_TYPE(FTP_SPACE, space)                                                                 \
@@ -100,6 +103,28 @@ private:
   int64_t parser_version_;
 };
 
+/**
+ * The built-in IK dictionaries of one process.
+ *
+ * Building them is the expensive part of an IK parse: the trie caches are loaded
+ * from (or built into) the dictionary hub and wrapped into range dictionaries.
+ * They never change once built, so every parser instance borrows the same objects
+ * instead of building its own copy for every document or every TOKENIZE call.
+ */
+struct ObFTIKDictSet
+{
+public:
+  bool is_valid() const
+  {
+    return nullptr != main_dict_ && nullptr != quan_dict_ && nullptr != stop_dict_;
+  }
+
+public:
+  ObIFTDict *main_dict_ = nullptr;
+  ObIFTDict *quan_dict_ = nullptr;
+  ObIFTDict *stop_dict_ = nullptr;
+};
+
 class ObFTParseData final
 {
 public:
@@ -119,16 +144,33 @@ public:
 public:
   ObStopWordChecker *stop_word_checker() const { return stop_word_checker_; }
   int get_dict_hub(ObFTDictHub *&hub);
+  /**
+   * Borrow the shared IK dictionaries, building them on first use.
+   *
+   * The returned pointers stay valid until the instance is destroyed, and the
+   * dictionaries are read only, so concurrent parsers can share them.
+   */
+  int get_ik_dict_set(ObFTIKDictSet &dict_set);
 
 private:
   int init_and_set_stopword_list();
   int init_dict_hub();
+  int build_ik_dict_set();
+  void destroy_ik_dict_set();
 
 private:
   ObStopWordChecker *     stop_word_checker_ = nullptr;
   ObFTDictHub *           dict_hub_          = nullptr;
   common::ObFIFOAllocator handler_allocator_;
   bool                    is_inited_         = false;
+
+  // Shared read-only IK dictionaries, visible to every IK parser.
+  ObFTIKDictSet           ik_dict_set_;
+  ObFTCacheRangeContainer *ik_cache_main_     = nullptr;
+  ObFTCacheRangeContainer *ik_cache_quan_     = nullptr;
+  ObFTCacheRangeContainer *ik_cache_stop_     = nullptr;
+  common::ObSpinLock      ik_dict_lock_;
+  bool                    ik_dict_set_inited_ = false;
 };
 
 class ObFTParseHelper final
@@ -161,6 +203,17 @@ public:
       common::ObIAllocator *allocator,
       const common::ObString &parser_name,
       const common::ObString &parser_properties);
+  /**
+   * Initialize from an already resolved parser property.
+   *
+   * Callers that build the property themselves (TOKENIZE without parser
+   * arguments, for example) avoid serializing it to JSON and parsing it back.
+   * The property is copied, so it only has to stay valid for the call.
+   */
+  int init(
+      common::ObIAllocator *allocator,
+      const common::ObString &parser_name,
+      const ObFTParserProperty &parser_property);
   /**
    * Split document into multiple words
    *

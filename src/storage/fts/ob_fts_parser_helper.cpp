@@ -22,7 +22,9 @@
 
 #include "common/json_type/ob_json_tree.h"
 #include "share/ob_force_print_log.h"
+#include "storage/fts/dict/ob_ft_cache_container.h"
 #include "storage/fts/dict/ob_ft_dict_hub.h"
+#include "storage/fts/dict/ob_ft_range_dict.h"
 #include "storage/fts/ob_beng_ft_parser.h"
 #include "storage/fts/ob_ik_ft_parser.h"
 #include "storage/fts/ob_ngram2_ft_parser.h"
@@ -238,8 +240,40 @@ void ObFTParseData::destroy()
     dict_hub_ = nullptr;
   }
 
+  destroy_ik_dict_set();
+
   handler_allocator_.reset();
   is_inited_ = false;
+}
+
+void ObFTParseData::destroy_ik_dict_set()
+{
+  if (OB_NOT_NULL(ik_dict_set_.main_dict_)) {
+    ik_dict_set_.main_dict_->~ObIFTDict();
+    handler_allocator_.free(ik_dict_set_.main_dict_);
+    ik_dict_set_.main_dict_ = nullptr;
+  }
+  if (OB_NOT_NULL(ik_dict_set_.quan_dict_)) {
+    ik_dict_set_.quan_dict_->~ObIFTDict();
+    handler_allocator_.free(ik_dict_set_.quan_dict_);
+    ik_dict_set_.quan_dict_ = nullptr;
+  }
+  if (OB_NOT_NULL(ik_dict_set_.stop_dict_)) {
+    ik_dict_set_.stop_dict_->~ObIFTDict();
+    handler_allocator_.free(ik_dict_set_.stop_dict_);
+    ik_dict_set_.stop_dict_ = nullptr;
+  }
+  ObFTCacheRangeContainer *containers[3] = {ik_cache_main_, ik_cache_quan_, ik_cache_stop_};
+  for (int64_t i = 0; i < 3; ++i) {
+    if (OB_NOT_NULL(containers[i])) {
+      containers[i]->~ObFTCacheRangeContainer();
+      handler_allocator_.free(containers[i]);
+    }
+  }
+  ik_cache_main_ = nullptr;
+  ik_cache_quan_ = nullptr;
+  ik_cache_stop_ = nullptr;
+  ik_dict_set_inited_ = false;
 }
 
 int ObFTParseData::get_dict_hub(ObFTDictHub *&hub)
@@ -249,6 +283,92 @@ int ObFTParseData::get_dict_hub(ObFTDictHub *&hub)
     ret = OB_NOT_INIT;
   } else {
     hub = dict_hub_;
+  }
+  return ret;
+}
+
+int ObFTParseData::get_ik_dict_set(ObFTIKDictSet &dict_set)
+{
+  int ret = OB_SUCCESS;
+  if (!ATOMIC_LOAD(&ik_dict_set_inited_)) {
+    common::ObSpinLockGuard guard(ik_dict_lock_);
+    if (!ik_dict_set_inited_ && OB_FAIL(build_ik_dict_set())) {
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_UNLIKELY(!ik_dict_set_.is_valid())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("shared ik dictionary set is not available", K(ret));
+  } else {
+    dict_set = ik_dict_set_;
+  }
+  return ret;
+}
+
+namespace
+{
+// Pin (or build) the trie cache of one built-in dictionary inside a container.
+int load_or_build_dict_cache(ObFTDictHub *hub,
+                             common::ObIAllocator &allocator,
+                             const ObFTDictDesc &desc,
+                             ObFTCacheRangeContainer *&container)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(hub)) {
+    ret = OB_NOT_INIT;
+  } else if (OB_ISNULL(container
+                       = OB_NEWx(ObFTCacheRangeContainer, &allocator, allocator))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else if (OB_FAIL(hub->load_cache(desc, *container))) {
+    if (OB_ENTRY_NOT_EXIST == ret) {
+      if (OB_FAIL(hub->build_cache(desc, *container))) {
+      }
+    }
+  }
+  return ret;
+}
+} // namespace
+
+int ObFTParseData::build_ik_dict_set()
+{
+  int ret = OB_SUCCESS;
+  ObFTDictDesc main_dict_desc("main_dict",
+                              ObFTDictType::DICT_IK_MAIN,
+                              ObCharsetType::CHARSET_UTF8MB4,
+                              ObCollationType::CS_TYPE_UTF8MB4_BIN);
+  ObFTDictDesc quan_dict_desc("quan_dict",
+                              ObFTDictType::DICT_IK_QUAN,
+                              ObCharsetType::CHARSET_UTF8MB4,
+                              ObCollationType::CS_TYPE_UTF8MB4_BIN);
+  ObFTDictDesc stopword_dict_desc("stopword",
+                                  ObFTDictType::DICT_IK_STOP,
+                                  ObCharsetType::CHARSET_UTF8MB4,
+                                  ObCollationType::CS_TYPE_UTF8MB4_BIN);
+  if (OB_ISNULL(dict_hub_)) {
+    ret = OB_NOT_INIT;
+  } else if (OB_FAIL(load_or_build_dict_cache(dict_hub_, handler_allocator_, main_dict_desc, ik_cache_main_))) {
+  } else if (OB_FAIL(load_or_build_dict_cache(dict_hub_, handler_allocator_, quan_dict_desc, ik_cache_quan_))) {
+  } else if (OB_FAIL(load_or_build_dict_cache(dict_hub_, handler_allocator_, stopword_dict_desc, ik_cache_stop_))) {
+  } else if (OB_ISNULL(ik_dict_set_.main_dict_
+                       = OB_NEWx(ObFTRangeDict, &handler_allocator_,
+                                 handler_allocator_, ik_cache_main_, main_dict_desc))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else if (OB_FAIL(ik_dict_set_.main_dict_->init())) {
+  } else if (OB_ISNULL(ik_dict_set_.quan_dict_
+                       = OB_NEWx(ObFTRangeDict, &handler_allocator_,
+                                 handler_allocator_, ik_cache_quan_, quan_dict_desc))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else if (OB_FAIL(ik_dict_set_.quan_dict_->init())) {
+  } else if (OB_ISNULL(ik_dict_set_.stop_dict_
+                       = OB_NEWx(ObFTRangeDict, &handler_allocator_,
+                                 handler_allocator_, ik_cache_stop_, stopword_dict_desc))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else if (OB_FAIL(ik_dict_set_.stop_dict_->init())) {
+  } else {
+    ik_dict_set_inited_ = true;
+  }
+  if (OB_FAIL(ret)) {
+    destroy_ik_dict_set();
   }
   return ret;
 }
@@ -336,6 +456,32 @@ int ObFTParseHelper::init(
     ret = OB_INVALID_ARGUMENT;
   } else if (OB_FAIL(parser_name_.parse_from_str(parser_name.ptr(), parser_name.length()))) {
   } else if (OB_FAIL(parser_property_.parse_for_parser_helper(parser_name_, parser_properties))) {
+  } else if (OB_FAIL(parser_name_.get_desc(parser_desc_))) {
+  } else if (OB_ISNULL(parser_desc_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(set_add_word_flag(*parser_desc_))) {
+  } else {
+    allocator_ = allocator;
+    is_inited_ = true;
+  }
+  if (OB_FAIL(ret) && OB_UNLIKELY(!is_inited_)) {
+    reset();
+  }
+  return ret;
+}
+
+int ObFTParseHelper::init(
+    common::ObIAllocator *allocator,
+    const common::ObString &parser_name,
+    const ObFTParserProperty &parser_property)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(is_inited_)) {
+    ret = OB_INIT_TWICE;
+  } else if (OB_ISNULL(allocator) || OB_UNLIKELY(parser_name.empty())) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_FAIL(parser_name_.parse_from_str(parser_name.ptr(), parser_name.length()))) {
+  } else if (FALSE_IT(parser_property_ = parser_property)) {
   } else if (OB_FAIL(parser_name_.get_desc(parser_desc_))) {
   } else if (OB_ISNULL(parser_desc_)) {
     ret = OB_ERR_UNEXPECTED;

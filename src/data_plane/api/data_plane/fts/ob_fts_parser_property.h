@@ -137,6 +137,14 @@ public:
   ObFTParserProperty();
   ~ObFTParserProperty() = default;
   int parse_for_parser_helper(const ObFTParser &parser, const ObString &json_str);
+  /**
+   * Fill the property with the built-in defaults of one parser.
+   *
+   * A caller that was not given any parser arguments needs exactly what the DDL
+   * default reform produces, without building, serializing and re-parsing the
+   * JSON document that carries those defaults.
+   */
+  int set_default_for_parser(const ObFTParser &parser);
 
   bool is_equal(const ObFTParserProperty &other) const
   {

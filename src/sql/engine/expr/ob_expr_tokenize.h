@@ -71,6 +71,10 @@ private:
     mutable ObArenaAllocator allocator_;
     ObString parser_name_;
     ObString properties_;
+    // Resolved parser configuration. TOKENIZE without parser arguments only needs
+    // the parser defaults, so they are filled here instead of being serialized to
+    // JSON and parsed back on every call.
+    storage::ObFTParserProperty parser_property_;
     ObObjMeta meta_;
     ObString fulltext_;
     enum OUTPUT_MODE

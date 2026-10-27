@@ -1067,6 +1067,32 @@ int ObFTParserProperty::parse_for_parser_helper(const ObFTParser &parser, const 
   return ret;
 }
 
+int ObFTParserProperty::set_default_for_parser(const ObFTParser &parser)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!parser.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (parser.is_ik()) {
+    // Mirrors ik_rebuild_props_for_ddl + parse_for_parser_helper on empty
+    // arguments: the built-in dictionary tables and the smart segmentation mode.
+    dict_table_ = ObString(ObFTSLiteral::CONFIG_NAME_DICT_TABLE);
+    stopword_table_ = ObString(ObFTSLiteral::CONFIG_NAME_STOPWORD_TABLE);
+    quantifier_table_ = ObString(ObFTSLiteral::CONFIG_NAME_QUANTIFIER_TABLE);
+    ik_mode_smart_ = true;
+  } else if (parser.is_space() || parser.is_beng()) {
+    min_token_size_ = ObFTSLiteral::FT_DEFAULT_MIN_TOKEN_SIZE;
+    max_token_size_ = ObFTSLiteral::FT_DEFAULT_MAX_TOKEN_SIZE;
+  } else if (parser.is_ngram()) {
+    ngram_token_size_ = ObFTSLiteral::FT_DEFAULT_NGRAM_TOKEN_SIZE;
+  } else if (parser.is_ngram2()) {
+    min_ngram_token_size_ = ObFTSLiteral::FT_DEFAULT_MIN_NGRAM_SIZE;
+    max_ngram_token_size_ = ObFTSLiteral::FT_DEFAULT_MAX_NGRAM_SIZE;
+  } else {
+    ret = OB_FUNCTION_NOT_DEFINED;
+  }
+  return ret;
+}
+
 ObFTParserProperty::ObFTParserProperty()
     : min_token_size_(ObFTSLiteral::FT_DEFAULT_MIN_TOKEN_SIZE),
       max_token_size_(ObFTSLiteral::FT_DEFAULT_MAX_TOKEN_SIZE),
