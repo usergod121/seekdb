@@ -2,6 +2,17 @@
 
 SQL_UNITY_GROUPS = [
     struct(
+        name = "ob_sql_file_sql_0",
+        language = "c++",
+        srcs = [
+            "src/sql/engine/file_sql/ob_file_column_infer.cpp",
+            "src/sql/engine/file_sql/ob_file_sql_rewrite.cpp",
+            "src/sql/engine/file_sql/ob_file_value_classify.cpp",
+        ],
+        generated_srcs = [],
+        external_srcs = [],
+    ),
+    struct(
         name = "ob_sql_code_generator_0",
         language = "c++",
         srcs = [
@@ -1709,3 +1720,4 @@ SQL_PARSER_SOURCES = [
     "src/sql/parser/parser_utility.cpp",
     "src/sql/parser/sql_parser_base.c",
 ]
+

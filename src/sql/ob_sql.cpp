@@ -38,6 +38,7 @@
 #include "sql/monitor/show_trace/ob_show_trace.h"
 #include "sql/optimizer/ob_optimizer.h"
 #include "share/rc/ob_server_runtime.h"
+#include "sql/engine/file_sql/ob_file_sql_rewrite.h"
 
 namespace oceanbase
 {
@@ -3184,8 +3185,17 @@ int ObSql::parser_and_check(const ObString &outlined_stmt,
   } else {
     pctx->reset_datum_param_store();
     pctx->get_param_store_for_update().reuse();
+    ObString exec_stmt = outlined_stmt;
+    if (ObFileSqlRewriter::need_rewrite(outlined_stmt)) {
+      // read_csv/read_json/read_parquet/glob and DESCRIBE over them expand into
+      // ordinary SQL here, before the statement is parsed.
+      if (OB_FAIL(ObFileSqlRewriter::rewrite(*session, allocator, outlined_stmt, exec_stmt))) {
+        LOG_WARN("failed to rewrite a file table statement", K(ret));
+      }
+    }
     ObParser parser(allocator, session->get_sql_mode(), session->get_charsets4parser());
-    if (OB_FAIL(parser.parse(outlined_stmt, parse_result,
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(parser.parse(exec_stmt, parse_result,
                              STD_MODE,
                              pc_ctx.sql_ctx_.handle_batched_multi_stmt(),
                              false, NULL != session->get_pl_context()))) {
