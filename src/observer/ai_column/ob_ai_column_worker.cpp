@@ -749,9 +749,22 @@ int ObAiColumnWorker::scan_tasks_(ObIAllocator &allocator)
     if (OB_FAIL(ret)) {
     } else if (OB_FAIL(build_group(schema_guard, first.table_id_, first.request_id_,
                                    first.rowkey_predicate_, *group, table_schema))) {
-      // the table of the task is unknown for now, the task rows stay for the next scan
+      // The task rows can never be generated when the table of the task is gone or the column is
+      // not an ai column any more, and a row that stays in the table is scanned again on every
+      // scan: the scan reads the oldest rows first, so a pile of such rows would starve every
+      // other ai column of the server. Those rows are dropped here; a failure that may be
+      // transient leaves them for the next scan.
+      const int build_ret = ret;
+      if (OB_TABLE_NOT_EXIST == build_ret || OB_NOT_SUPPORTED == build_ret
+          || OB_ERR_BAD_FIELD_ERROR == build_ret) {
+        int del_ret = delete_orphan_tasks(first.table_id_, first.request_id_);
+        if (OB_SUCCESS != del_ret && REACH_TIME_INTERVAL(10 * 1000 * 1000L)) {
+          LOG_WARN("fail to drop the task rows of a table that is gone", K(del_ret),
+                   "table_id", first.table_id_, "request_id", first.request_id_);
+        }
+      }
       if (REACH_TIME_INTERVAL(10 * 1000 * 1000L)) {
-        LOG_WARN("fail to build the ai column task group", KR(ret),
+        LOG_WARN("fail to build the ai column task group", K(build_ret),
                  "table_id", first.table_id_, "request_id", first.request_id_);
       }
       free_group(group);
@@ -990,6 +1003,26 @@ int ObAiColumnWorker::write_group(ObAiColumnTaskGroup &group, const bool row_mis
 // Publish the failure of a row version: its task rows wait for the back off before they are
 // tried again, and a task row whose ai column ran out of retries is dropped, the value of that
 // column stays null. The failure is never reported to a client.
+int ObAiColumnWorker::delete_orphan_tasks(const uint64_t table_id, const int64_t request_id)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString sql;
+  int64_t affected_rows = 0;
+  // one statement on the connection of the worker, so the transaction of another item can not
+  // interleave with it
+  lib::ObMutexGuard guard(inner_sql_.get_lock());
+  if (OB_FAIL(sql.assign_fmt("DELETE FROM %s WHERE table_id = %lu AND request_id = %ld",
+                             AI_COLUMN_TASK_TABLE, table_id, request_id))) {
+    LOG_WARN("fail to build the statement that drops an orphan task", KR(ret));
+  } else if (OB_FAIL(inner_sql_.write(sql.ptr(), 0, affected_rows))) {
+    LOG_WARN("fail to drop the orphan task rows of an ai column", KR(ret), K(sql));
+  } else {
+    LOG_INFO("dropped the task rows of a row version whose table is gone", K(table_id),
+             K(request_id), K(affected_rows));
+  }
+  return ret;
+}
+
 int ObAiColumnWorker::retry_group(ObAiColumnTaskGroup &group)
 {
   int ret = OB_SUCCESS;

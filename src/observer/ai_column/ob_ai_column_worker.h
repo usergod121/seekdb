@@ -206,6 +206,9 @@ private:
   // Publish the failure of the row version: bump the retry count of its task rows and let
   // them wait for the back off, or drop them when the ai column ran out of retries.
   int retry_group(ObAiColumnTaskGroup &group);
+  // Drop the task rows of a row version whose table or column does not exist any more. They can
+  // never be generated, and the scan would read them again and again, ahead of every other task.
+  int delete_orphan_tasks(const uint64_t table_id, const int64_t request_id);
 
   // The task rows stay in the table until the value is written, so a scan keeps seeing a row
   // version that is already being generated and must not queue it twice.
