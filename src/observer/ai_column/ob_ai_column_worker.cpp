@@ -62,24 +62,6 @@ const char *const AI_COLUMN_TASK_TABLE = "oceanbase.__all_ai_column_task";
 const char *const AI_COMPLETE_FUNC_NAME = "ai_complete";
 const char *const AI_EMBED_FUNC_NAME = "ai_embed";
 
-// TEMPORARY (diagnosis of the session corruption, delete before commit): the mode selects how
-// much of the worker runs, so that one build can be bisected from the outside without rebuilding.
-//   "off"  the module is constructed, inited and started, but the scan timer is never scheduled
-//   "scan" the scan reads the task table and stops there, nothing is queued into the pool
-//   unset  the worker runs fully
-const char *const AI_COLUMN_WORKER_MODE_ENV = "SEEKDB_AI_COLUMN_WORKER_MODE";
-
-const char *ai_column_worker_mode()
-{
-  const char *mode = getenv(AI_COLUMN_WORKER_MODE_ENV);
-  return nullptr == mode ? "" : mode;
-}
-
-bool worker_mode_is(const char *mode)
-{
-  return 0 == strcmp(ai_column_worker_mode(), mode);
-}
-
 // Task row state of a task whose last generation failed and that waits for its next try. A
 // task that is waiting for its first generation stays 0, the dml side writes it that way.
 const int64_t AI_COLUMN_TASK_STATE_FAILED = 3;
@@ -584,23 +566,16 @@ int ObAiColumnWorker::start()
     LOG_WARN("the inner sql proxy is not available", KR(ret));
   } else if (OB_FAIL(inner_sql_.init(*sql_proxy))) {
     LOG_WARN("fail to take the inner connection of the ai column worker", KR(ret));
-  } else if (worker_mode_is("off")) {
-    // TEMPORARY (diagnosis): the module stays registered, inited and started, the scan never runs
-    LOG_INFO("ai column worker is started without the scan timer for diagnosis");
   } else if (OB_FAIL(ObSimpleThreadPool::set_adaptive_thread(MIN_THREAD_COUNT, MAX_THREAD_COUNT))) {
     LOG_WARN("fail to set the thread count of the ai column worker", KR(ret));
   } else if (get_thread_count() <= 0 && !try_expand_one(MIN_THREAD_COUNT)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("fail to start the ai column worker threads", KR(ret));
-  } else if (worker_mode_is("timernopool")) {
-    // TEMPORARY (diagnosis): the scan runs on the timer thread, the pool stays out of it
-    LOG_INFO("ai column worker runs the scan only, for diagnosis");
   } else if (OB_FAIL(timer_.schedule(scan_task_, SCAN_INTERVAL_US, true /*repeat*/,
                                      true /*immediate*/))) {
     LOG_WARN("fail to schedule the ai column task scan", KR(ret));
   } else {
-    LOG_INFO("ai column worker is started", "scan_interval_us", SCAN_INTERVAL_US,
-             "mode", ai_column_worker_mode());
+    LOG_INFO("ai column worker is started", "scan_interval_us", SCAN_INTERVAL_US);
   }
   return ret;
 }
@@ -706,10 +681,6 @@ int ObAiColumnWorker::scan_tasks_(ObIAllocator &allocator)
   }
   // the scanned rows are ordered by table, request and column, so the rows of one row version
   // are adjacent and the request ids of two row versions never mix
-  if (worker_mode_is("scan")) {
-    // TEMPORARY (diagnosis): the read above ran, nothing is handed to the pool
-    return ret;
-  }
   // One schema guard for the whole scan. The table schema build_group() resolves belongs to the
   // guard, so it has to outlive every build_item() of that row version.
   ObSchemaGetterGuard schema_guard;
