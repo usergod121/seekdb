@@ -525,6 +525,17 @@ int ObDelUpdResolver::resolve_additional_assignments(ObIArray<ObTableAssignment>
       LOG_WARN("fail to get table schema", KPC(table_item), K(table_schema));
     } else if (OB_FAIL(table_schema->has_before_update_row_trigger(*schema_guard, trigger_exist))) {
     } else if (OB_FAIL(generate_wrapper_expr_for_assignemnts(assigns.at(i).assignments_, trigger_exist))) {
+    // An ai column can only be invalidated if it is in the statement's assignment list, so an
+    // update that touches one of its dependencies, or one of the rowkey columns, has to add
+    // the invalidation here, before the dml is built.
+    // It also has to happen before the hidden columns of a vector index are considered below:
+    // the vid column of the index and the generated domain columns are only assigned when the
+    // assignment list already mentions the indexed column, so an invalidation appended after
+    // that point would null the ai column without ever maintaining the index entry it leaves
+    // behind.
+    } else if (T_UPDATE_SCOPE == scope
+               && OB_FAIL(resolve_ai_column_assignments(assigns, i, *table_item, *table_schema))) {
+      LOG_WARN("fail to resolve the ai column assignments", K(ret));
     } else if (OB_FAIL(check_update_vector_col_with_vector_index(table_schema,
                                                                  schema_guard,
                                                                  assigns.at(i).assignments_,
@@ -628,14 +639,6 @@ int ObDelUpdResolver::resolve_additional_assignments(ObIArray<ObTableAssignment>
     } else if (OB_SUCC(ret)) {
       // for UPDATE
       if (OB_FAIL(check_heap_table_update(assigns.at(i)))) {
-      }
-    }
-    // An ai column can only be invalidated if it is in the statement's assignment list, so an
-    // update that touches one of its dependencies, or one of the rowkey columns, has to add
-    // the invalidation here, before the dml is built.
-    if (OB_SUCC(ret) && T_UPDATE_SCOPE == scope) {
-      if (OB_FAIL(resolve_ai_column_assignments(assigns, i, *table_item, *table_schema))) {
-        LOG_WARN("fail to resolve the ai column assignments", K(ret));
       }
     }
   }
