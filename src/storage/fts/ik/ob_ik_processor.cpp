@@ -46,20 +46,29 @@ int ObIIKProcessor::process(TokenizeContext &ctx)
   return ret;
 }
 
-TokenizeContext::TokenizeContext(ObCollationType coll_type,
-                                 ObIAllocator &allocator,
-                                 const char *fulltext,
-                                 int64_t fulltext_len,
-                                 bool is_smart)
-    : coll_type_(coll_type), fulltext_(fulltext), fulltext_len_(fulltext_len), cursor_(0),
-      next_char_len_(0), handle_size_(0), is_smart_(is_smart), token_list_(allocator),
-      result_list_(allocator)
+TokenizeContext::TokenizeContext(ObIAllocator &allocator)
+    : coll_type_(ObCollationType::CS_TYPE_INVALID), fulltext_(nullptr), fulltext_len_(0), cursor_(0),
+      next_char_len_(0), next_char_type_(ObFTCharUtil::CharType::USELESS), handle_size_(0),
+      is_smart_(false), is_utf8mb4_(false), token_list_(allocator), result_list_(allocator)
 {
 }
 
-int TokenizeContext::init()
+int TokenizeContext::init(ObCollationType coll_type,
+                          const char *fulltext,
+                          int64_t fulltext_len,
+                          bool is_smart)
 {
   int ret = OB_SUCCESS;
+
+  coll_type_ = coll_type;
+  fulltext_ = fulltext;
+  fulltext_len_ = fulltext_len;
+  cursor_ = 0;
+  next_char_len_ = 0;
+  next_char_type_ = ObFTCharUtil::CharType::USELESS;
+  handle_size_ = 0;
+  is_smart_ = is_smart;
+  is_utf8mb4_ = (ObCharsetType::CHARSET_UTF8MB4 == ObCharset::charset_type_by_coll(coll_type));
 
   if (OB_ISNULL(fulltext_) || fulltext_len_ <= 0) {
     ret = OB_INVALID_ARGUMENT;
@@ -102,10 +111,19 @@ int TokenizeContext::current_char_type(ObFTCharUtil::CharType &type)
 int TokenizeContext::prepare_next_char()
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(ObCharset::first_valid_char(coll_type_,
-                                          fulltext_ + cursor_,
-                                          fulltext_len_ - cursor_,
-                                          next_char_len_))) {
+  if (is_utf8mb4_) {
+    // One decode per character instead of a charset lookup, an indirect call to
+    // well_formed_len() and one decode per candidate character class.
+    if (OB_FAIL(ObFTCharUtil::utf8mb4_first_char(coll_type_,
+                                                 fulltext_ + cursor_,
+                                                 fulltext_len_ - cursor_,
+                                                 next_char_len_,
+                                                 next_char_type_))) {
+    }
+  } else if (OB_FAIL(ObCharset::first_valid_char(coll_type_,
+                                                 fulltext_ + cursor_,
+                                                 fulltext_len_ - cursor_,
+                                                 next_char_len_))) {
   } else if (OB_FAIL(ObFTCharUtil::classify_first_char(coll_type_,
                                                        fulltext_ + cursor_,
                                                        next_char_len_,

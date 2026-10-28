@@ -29,11 +29,10 @@ class ObFTDictHub;
 class ObIKCJKProcessor : public ObIIKProcessor
 {
 public:
-  ObIKCJKProcessor(const ObIFTDict &dict_main, ObIAllocator &alloc)
-      : hits_(alloc), dict_main_(dict_main), cjk_start_(-1), cjk_end_(-1)
-  {
-  }
-  ~ObIKCJKProcessor() override { hits_.reset(); }
+  ObIKCJKProcessor() : dict_main_(nullptr), cjk_start_(-1), cjk_end_(-1), hits_cnt_(0) {}
+  ~ObIKCJKProcessor() override = default;
+
+  void init(const ObIFTDict &dict_main) { dict_main_ = &dict_main; }
 
 public:
   int do_process(TokenizeContext &ctx,
@@ -42,10 +41,21 @@ public:
                  const ObFTCharUtil::CharType type) override;
 
 private:
-  ObList<ObDATrieHit, ObIAllocator> hits_;
-  const ObIFTDict &dict_main_;
+  int push_hit(const ObDATrieHit &hit);
+
+private:
+  // One live hit per start position, and a hit only survives while it is still a
+  // prefix of a dictionary word, so the number of live hits is bounded by the
+  // longest dictionary word: 16 characters for the built in IK dictionary.  The
+  // hits therefore live in a fixed array and the per character walk never
+  // allocates.
+  static constexpr int64_t MAX_LIVE_HITS = 32;
+
+  const ObIFTDict *dict_main_;
   int64_t cjk_start_;
   int64_t cjk_end_;
+  ObDATrieHit hits_[MAX_LIVE_HITS];
+  int64_t hits_cnt_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObIKCJKProcessor);

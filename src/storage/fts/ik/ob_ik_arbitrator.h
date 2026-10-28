@@ -18,6 +18,7 @@
 #define _OCEANBASE_STORAGE_FTS_IK_OB_IK_ARBITRATOR_H_
 
 #include "lib/allocator/page_arena.h"
+#include "lib/container/ob_vector.h"
 #include "lib/hash/ob_hashmap.h"
 #include "lib/utility/ob_macro_utils.h"
 #include "storage/fts/ik/ob_ik_token.h"
@@ -43,6 +44,10 @@ private:
 
   int add_chain(ObIKTokenChain *chain);
 
+  // Chain whose start offset is exactly offset, or nullptr.  idx is a hint that is
+  // advanced as the caller walks the text forward.
+  ObIKTokenChain *chain_starting_at(int64_t &idx, const int64_t offset) const;
+
   int optimize(TokenizeContext &ctx,
                ObIKTokenChain *option,
                ObFTSortList::CellIter iter,
@@ -61,7 +66,10 @@ private:
 
 private:
   ObArenaAllocator alloc_;
-  hash::ObHashMap<int64_t, ObIKTokenChain *> chains_;
+  // Chains in ascending start offset order.  output_result() walks the text once,
+  // also in ascending order, so a moving index over this array replaces the hash
+  // lookup that used to be done for every character of the text.
+  ObVector<ObIKTokenChain *, ObArenaAllocator> chains_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObIKArbitrator);

@@ -21,7 +21,11 @@
 #include "storage/fts/dict/ob_ft_cache_container.h"
 #include "storage/fts/dict/ob_ft_dict.h"
 #include "storage/fts/dict/ob_ft_dict_def.h"
+#include "storage/fts/ik/ob_ik_cjk_processor.h"
+#include "storage/fts/ik/ob_ik_letter_processor.h"
 #include "storage/fts/ik/ob_ik_processor.h"
+#include "storage/fts/ik/ob_ik_quantifier_processor.h"
+#include "storage/fts/ik/ob_ik_surrogate_processor.h"
 #include "data_plane/fts/ob_fts_parser.h"
 
 #include <cstdint>
@@ -38,8 +42,8 @@ public:
       : allocator_(allocator),
         is_inited_(false),
         coll_type_(ObCollationType::CS_TYPE_INVALID),
-        ctx_(nullptr),
-        segmenters_(allocator_),
+        ctx_(allocator_),
+        cnqsg_(allocator_),
         dict_main_(nullptr),
         dict_quan_(nullptr),
         dict_stop_(nullptr)
@@ -62,12 +66,6 @@ private:
 
   int process_next_batch();
 
-  int process_one_char(TokenizeContext &ctx,
-                       const char *ch,
-                       const uint8_t char_len,
-                       const ObFTCharUtil::CharType type);
-
-private:
   int init_dict(const ObFTParserParam &param);
 
   int init_segmenter(const ObFTParserParam &param);
@@ -82,14 +80,20 @@ private:
   bool is_inited_;
 
   ObCollationType coll_type_;
-  TokenizeContext *ctx_;
-  ObList<ObIIKProcessor *, ObIAllocator> segmenters_;
+  // The segmenting context and the four segmenters live in the parser itself: a
+  // parse used to allocate them, one by one, through the caller's allocator and
+  // then walk them through a list of base class pointers for every character.
+  TokenizeContext ctx_;
+  ObIKLetterProcessor letter_seg_;
+  ObIKQuantifierProcessor cnqsg_;
+  ObIKCJKProcessor cjksg_;
+  ObIKSurrogateProcessor surrogate_seg_;
 
   // Borrowed from ObFTParseData: the built-in dictionaries are immutable, so one
   // shared copy serves every parser instance and no parse pays for building it.
-  ObIFTDict *dict_main_;
-  ObIFTDict *dict_quan_;
-  ObIFTDict *dict_stop_;
+  const ObIFTDict *dict_main_;
+  const ObIFTDict *dict_quan_;
+  const ObIFTDict *dict_stop_;
 
   DISABLE_COPY_ASSIGN(ObIKFTParser);
 };

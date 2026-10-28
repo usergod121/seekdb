@@ -30,15 +30,14 @@ namespace storage
 class TokenizeContext
 {
 public:
-  TokenizeContext(ObCollationType coll_type,
-                  ObIAllocator &allocator,
-                  const char *fulltext,
-                  int64_t fulltext_len,
-                  bool is_smart);
+  explicit TokenizeContext(ObIAllocator &allocator);
 
   ~TokenizeContext();
 
-  int init();
+  int init(ObCollationType coll_type,
+           const char *fulltext,
+           int64_t fulltext_len,
+           bool is_smart);
   int reset_resource();
 
   int get_next_token(const char *&word, int64_t &word_len, int64_t &offset, int64_t &char_cnt);
@@ -59,6 +58,7 @@ public:
   bool is_last() const;
   bool iter_end() const;
   bool is_smart() const;
+  bool is_utf8mb4() const { return is_utf8mb4_; }
 
   int add_chain(ObIKTokenChain *chain);
   int add_token(const char *fulltext,
@@ -86,6 +86,9 @@ private:
 
   uint32_t handle_size_;
   bool is_smart_;
+  // True when coll_type_ belongs to the UTF8MB4 charset: the per character walk
+  // then decodes directly instead of going through the charset layer.
+  bool is_utf8mb4_;
 
   ObFTSortList token_list_;
   ObList<ObIKToken, ObIAllocator> result_list_;

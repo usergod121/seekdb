@@ -47,6 +47,7 @@ ObTextRetrievalTokenIter::ObTextRetrievalTokenIter()
     advance_doc_id_(),
     token_doc_cnt_calculated_(false),
     inv_idx_agg_cache_mode_(false),
+    bool_relevance_only_(false),
     is_inited_(false)
 {
 }
@@ -67,6 +68,7 @@ int ObTextRetrievalTokenIter::init(const ObTextRetrievalScanIterParam &iter_para
   inv_scan_domain_id_col_ = iter_param.inv_scan_domain_id_col_;
   max_batch_size_ = OB_MAX(iter_param.eval_ctx_->max_batch_size_, 1);
   inv_idx_agg_cache_mode_ = iter_param.inv_idx_agg_cache_mode_;
+  bool_relevance_only_ = iter_param.bool_relevance_only_;
 
   if (OB_ISNULL(inv_idx_scan_iter_) || OB_ISNULL(eval_ctx_) || OB_ISNULL(inv_idx_scan_param_) ||
       OB_ISNULL(inv_scan_domain_id_col_) || OB_ISNULL(allocator_) || OB_ISNULL(mem_context_.ref_context())) {
@@ -203,12 +205,13 @@ int ObTextRetrievalTokenIter::get_next_row()
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-  } else if (!token_doc_cnt_calculated_ && OB_FAIL(estimate_token_doc_cnt())) {
+  } else if (!token_doc_cnt_calculated_ && !bool_relevance_only_
+             && OB_FAIL(estimate_token_doc_cnt())) {
   } else if (OB_FAIL(query::das_scan_next_row(inv_idx_scan_iter_))) {
     if (OB_UNLIKELY(OB_ITER_END != ret)) {
     }
   } else {
-    if (need_calc_relevance()) {
+    if (need_calc_relevance() && !bool_relevance_only_) {
       clear_row_wise_evaluated_flag();
       if (OB_FAIL(fill_token_doc_cnt())) {
       } else if (OB_FAIL(fill_token_weight())) {
@@ -242,7 +245,8 @@ int ObTextRetrievalTokenIter::get_next_batch(const int64_t capacity, int64_t &co
   count = 0;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-  } else if (!token_doc_cnt_calculated_ && OB_FAIL(estimate_token_doc_cnt())) {
+  } else if (!token_doc_cnt_calculated_ && !bool_relevance_only_
+             && OB_FAIL(estimate_token_doc_cnt())) {
   } else if (OB_FAIL(query::das_scan_next_rows(
                  inv_idx_scan_iter_, count, OB_MIN(max_batch_size_, capacity)))) {
     if (OB_UNLIKELY(OB_ITER_END != ret)) {
@@ -252,7 +256,7 @@ int ObTextRetrievalTokenIter::get_next_batch(const int64_t capacity, int64_t &co
   }
 
   if (OB_FAIL(ret)) {
-  } else if (need_calc_relevance()) {
+  } else if (need_calc_relevance() && !bool_relevance_only_) {
     const sql::ObBitVector *skip = NULL;
     PRINT_VECTORIZED_ROWS(SQL, DEBUG, *eval_ctx_, *inv_idx_scan_param_->output_exprs_, count, skip);
     clear_batch_wise_evaluated_flag(count);
@@ -501,6 +505,18 @@ int ObTextRetrievalDaaTTokenIter::save_relevances_and_docids()
   int ret = OB_SUCCESS;
   if (OB_ISNULL(relevance_expr_) || OB_ISNULL(inv_scan_domain_id_col_)) {
     ret = OB_INVALID_ARGUMENT;
+  } else if (token_iter_->bool_relevance_only()) {
+    // The score is only compared against zero by the pushed down match filter, so a constant
+    // non zero relevance is equivalent and saves the BM25 evaluation of every posting.
+    cur_idx_ = 0;
+    const ObDatumVector &doc_id_datum = inv_scan_domain_id_col_->locate_expr_datumvector(*eval_ctx_);
+    for (int64_t i = 0; OB_SUCC(ret) && i < count_; ++i) {
+      if (OB_LIKELY(!token_iter_->get_skip()->at(i))) {
+        relevance_[i] = 1.0;
+        if (OB_FAIL(doc_id_[i].from_datum(*doc_id_datum.at(i)))) {
+        }
+      }
+    }
   } else if (OB_FAIL(relevance_expr_->eval_batch(*eval_ctx_, *token_iter_->get_skip(), count_))) {
   } else {
     cur_idx_ = 0;

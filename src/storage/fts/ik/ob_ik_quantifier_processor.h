@@ -30,11 +30,13 @@ class ObFTDictHub;
 class ObIKQuantifierProcessor : public ObIIKProcessor
 {
 public:
-  ObIKQuantifierProcessor(const ObIFTDict &quan_dict, ObIAllocator &alloc)
-      : quan_dict_(quan_dict), count_hits_(alloc), start_(-1), end_(-1), quan_char_cnt_(0)
+  explicit ObIKQuantifierProcessor(ObIAllocator &alloc)
+      : quan_dict_(nullptr), count_hits_(alloc), start_(-1), end_(-1), quan_char_cnt_(0)
   {
   }
   ~ObIKQuantifierProcessor() override { count_hits_.reset(); }
+
+  void init(const ObIFTDict &quan_dict) { quan_dict_ = &quan_dict; }
 
   int do_process(TokenizeContext &ctx,
                  const char *ch,
@@ -58,7 +60,9 @@ private:
   int output_num_token(TokenizeContext &ctx);
 
 private:
-  const ObIFTDict &quan_dict_;
+  const ObIFTDict *quan_dict_;
+  // Only used while a number quantifier is being scanned; the count qualifier is
+  // rare, so this list is allowed to stay a list.
   ObList<ObDATrieHit, ObIAllocator> count_hits_;
   int64_t start_;
   int64_t end_;

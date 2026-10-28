@@ -11987,6 +11987,87 @@ int ObLogPlan::construct_startup_filter_for_limit(ObRawExpr *limit_expr, ObLogic
   return ret;
 }
 
+namespace {
+// The pushed down match filter only tests whether a document matched, i.e. whether the match
+// expression produced a non zero score.
+bool is_boolean_match_predicate(const ObRawExpr *pred, const ObRawExpr *match_expr)
+{
+  bool bret = false;
+  if (OB_ISNULL(pred) || OB_ISNULL(match_expr)) {
+    bret = false;
+  } else if (pred == match_expr) {
+    bret = true;
+  } else if (T_OP_BOOL == pred->get_expr_type()
+             && 1 == pred->get_param_count()
+             && pred->get_param_expr(0) == match_expr) {
+    bret = true;
+  }
+  return bret;
+}
+
+// The relevance score of a match expression is observable above the scan when the statement
+// returns it or uses it to order rows: a top-k on the match expression needs the real scores.
+int match_score_is_observable(const ObDMLStmt *stmt, bool &observable)
+{
+  int ret = OB_SUCCESS;
+  observable = true;
+  if (OB_ISNULL(stmt)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null stmt", K(ret));
+  } else {
+    bool found = false;
+    const ObIArray<OrderItem> &order_items = stmt->get_order_items();
+    for (int64_t i = 0; OB_SUCC(ret) && !found && i < order_items.count(); ++i) {
+      const ObRawExpr *expr = order_items.at(i).expr_;
+      if (OB_ISNULL(expr)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null order by expr", K(ret));
+      } else if (expr->has_flag(CNT_MATCH_EXPR)) {
+        found = true;
+      }
+    }
+    if (OB_SUCC(ret) && !found && stmt->is_select_stmt()) {
+      ObSEArray<ObRawExpr *, 4> select_exprs;
+      if (OB_FAIL(static_cast<const ObSelectStmt *>(stmt)->get_select_exprs(select_exprs))) {
+      }
+      for (int64_t i = 0; OB_SUCC(ret) && !found && i < select_exprs.count(); ++i) {
+        const ObRawExpr *expr = select_exprs.at(i);
+        if (OB_ISNULL(expr)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpected null select expr", K(ret));
+        } else if (expr->has_flag(CNT_MATCH_EXPR)) {
+          found = true;
+        }
+      }
+    }
+    if (OB_SUCC(ret)) {
+      observable = found;
+    }
+  }
+  return ret;
+}
+
+// A match expression that is only used as a boolean filter does not require the retrieval layer to
+// compute BM25 for every candidate document, see ObTextRetrievalInfo::bool_relevance_only_.
+int check_bool_relevance_only(const ObIArray<ObRawExpr *> &all_match_filters,
+                              const ObRawExpr *match_pred,
+                              const ObRawExpr *match_expr,
+                              const ObDMLStmt *stmt,
+                              bool &bool_relevance_only)
+{
+  int ret = OB_SUCCESS;
+  bool_relevance_only = false;
+  bool observable = true;
+  if (OB_UNLIKELY(1 != all_match_filters.count()) || !is_boolean_match_predicate(match_pred, match_expr)) {
+    // keep the accurate score: another predicate or the match filter itself observes its value
+  } else if (OB_FAIL(match_score_is_observable(stmt, observable))) {
+  } else {
+    bool_relevance_only = !observable;
+  }
+  return ret;
+}
+} // namespace
+
 int ObLogPlan::prepare_text_retrieval_scan(const ObIArray<ObRawExpr *> &scan_match_exprs,
                                            const ObIArray<ObRawExpr *> &scan_match_filters,
                                            const ObIArray<ObRawExpr *> &all_match_filters,
@@ -12046,6 +12127,11 @@ int ObLogPlan::prepare_text_retrieval_scan(const ObIArray<ObRawExpr *> &scan_mat
     }
     if (OB_FAIL(table_scan->set_is_skip_rowkey_doc(tr_info.doc_id_idx_tid_ == OB_INVALID_ID))) {
     } else if (OB_FAIL(table_scan->set_is_skip_rowkey_doc(tr_info.rowkey_idx_tid_ == OB_INVALID_ID))) {
+    } else if (OB_FAIL(check_bool_relevance_only(all_match_filters,
+                                                 match_pred,
+                                                 match_against,
+                                                 get_stmt(),
+                                                 tr_info.bool_relevance_only_))) {
     }
   }
 

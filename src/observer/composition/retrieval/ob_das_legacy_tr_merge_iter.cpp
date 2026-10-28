@@ -367,6 +367,7 @@ int ObDASLegacyTRMergeIter::init_dim_iter_param(ObTextRetrievalScanIterParam &it
     iter_param.inv_scan_doc_length_col_ = ir_ctdef_->inv_scan_doc_length_col_;
     iter_param.inv_scan_domain_id_col_ = ir_ctdef_->inv_scan_domain_id_col_;
     iter_param.inv_idx_agg_cache_mode_ = function_lookup_mode_ && !taat_mode_;
+    iter_param.bool_relevance_only_ = ir_ctdef_->bool_relevance_only();
   }
   return ret;
 }

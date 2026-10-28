@@ -97,7 +97,7 @@ int ObIKQuantifierProcessor::process_CN_count(TokenizeContext &ctx,
         for (ObDATrieHit &hit : count_hits_) {
           if (OB_FAIL(ret)) {
             break;
-          } else if (OB_FAIL(quan_dict_.match({char_len, ch}, hit))) {
+          } else if (OB_FAIL(quan_dict_->match({char_len, ch}, hit))) {
           } else if (hit.is_match()) {
             if (OB_FAIL(ctx.add_token(ctx.fulltext(),
                                       hit.start_pos_,
@@ -126,8 +126,8 @@ int ObIKQuantifierProcessor::process_CN_count(TokenizeContext &ctx,
       } else {
         // find dict
 
-        ObDATrieHit hit(&quan_dict_, ctx.get_cursor());
-        if (OB_FAIL(quan_dict_.match({char_len, ch}, hit))) {
+        ObDATrieHit hit(quan_dict_, ctx.get_cursor());
+        if (OB_FAIL(quan_dict_->match({char_len, ch}, hit))) {
         } else if (hit.is_match()) {
           if (OB_FAIL(ctx.add_token(ctx.fulltext(),
                                     hit.start_pos_,

@@ -85,6 +85,9 @@ public:
       flags_(0),
       field_boost_expr_(nullptr) {}
   bool need_calc_relevance() const { return nullptr != relevance_expr_; }
+  // The relevance value is only consumed as a boolean (does the document match?), so the retrieval
+  // iterators can fill a constant non zero score instead of evaluating BM25 for every candidate.
+  bool bool_relevance_only() const { return bool_relevance_only_; }
   bool need_proj_relevance_score() const { return nullptr != relevance_proj_col_; }
   bool need_inv_idx_agg() const { return has_inv_agg_ && need_calc_relevance(); }
   bool need_block_max_scan() const { return has_block_max_scan_; }
@@ -188,7 +191,7 @@ public:
     {
       uint8_t has_inv_agg_:1;
       uint8_t has_doc_id_agg_:1;
-      uint8_t reserved_ir_scan_flag_:1;
+      uint8_t bool_relevance_only_:1; // relevance is only tested as a boolean, its value is not observable
       uint8_t has_block_max_scan_:1;
       uint8_t has_avg_doc_len_est_:1;
       uint8_t reserved_:3;

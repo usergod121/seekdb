@@ -224,6 +224,22 @@ ObBasicEnglishNormalizer::ObBasicEnglishNormalizer()
 {
 }
 
+namespace
+{
+// True when lowering the token cannot change it: every byte is ASCII and none of
+// them is an upper case letter.
+bool is_lower_case_ascii(const ObString &token)
+{
+  bool is_lower = true;
+  const unsigned char *bytes = reinterpret_cast<const unsigned char *>(token.ptr());
+  for (int64_t i = 0; is_lower && i < token.length(); ++i) {
+    const unsigned char byte = bytes[i];
+    is_lower = byte < 0x80 && (byte < 'A' || byte > 'Z');
+  }
+  return is_lower;
+}
+} // namespace
+
 void ObBasicEnglishNormalizer::reset()
 {
   norm_allocator_.reset();
@@ -295,7 +311,12 @@ int ObBasicEnglishNormalizer::get_next(ObDatum &next_token, int64_t &token_freq)
     } else {
       ObString norm_alnum_token(norm_token_len, norm_token_ptr);
       ObString norm_lower_token;
-      if (OB_FAIL(ObCharset::tolower(cs_, norm_alnum_token, norm_lower_token, norm_allocator_))) {
+      // A lower case ASCII token is already its own lower case form, so the copy
+      // into the normalizer allocator and the case table walk can both be skipped
+      // for the ordinary ("the", "quick", ...) token.
+      if (is_lower_case_ascii(norm_alnum_token)) {
+        next_token.set_string(norm_alnum_token);
+      } else if (OB_FAIL(ObCharset::tolower(cs_, norm_alnum_token, norm_lower_token, norm_allocator_))) {
       } else {
         next_token.set_string(norm_lower_token);
       }

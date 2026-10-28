@@ -32,6 +32,26 @@ namespace oceanbase
 {
 namespace storage
 {
+namespace
+{
+// Length and class of the character at buf.  UTF8MB4 texts take the direct path,
+// every other charset keeps going through the charset layer.
+int first_char_and_type(const TokenizeContext &ctx,
+                        const char *buf,
+                        const int64_t buf_len,
+                        int64_t &char_len,
+                        ObFTCharUtil::CharType &type)
+{
+  int ret = OB_SUCCESS;
+  if (ctx.is_utf8mb4()) {
+    ret = ObFTCharUtil::utf8mb4_first_char(ctx.collation(), buf, buf_len, char_len, type);
+  } else if (OB_FAIL(ObCharset::first_valid_char(ctx.collation(), buf, buf_len, char_len))) {
+  } else if (OB_FAIL(ObFTCharUtil::classify_first_char(ctx.collation(), buf, char_len, type))) {
+  }
+  return ret;
+}
+} // namespace
+
 int ObIKArbitrator::process(TokenizeContext &ctx)
 {
   int ret = OB_SUCCESS;
@@ -113,22 +133,22 @@ int ObIKArbitrator::output_result(TokenizeContext &ctx)
 
   int64_t char_len = 0;
   ObIKTokenChain *chain = nullptr;
+  // The chains are stored in ascending start offset order and this loop also walks
+  // the text in ascending order, so one moving index replaces the hash lookup that
+  // used to run for every character.
+  int64_t chain_idx = 0;
   for (int64_t current = 0; OB_SUCC(ret) && current < ctx.fulltext_len();) {
     ObFTCharUtil::CharType type;
     // maybe not so good to keep single, check it later
-    if (OB_FAIL(ObCharset::first_valid_char(ctx.collation(),
-                                            ctx.fulltext() + current,
-                                            ctx.fulltext_len() - current,
-                                            char_len))) {
-    } else if (OB_FAIL(ObFTCharUtil::classify_first_char(ctx.collation(),
-                                                         ctx.fulltext() + current,
-                                                         char_len,
-                                                         type))) {
+    if (OB_FAIL(first_char_and_type(ctx,
+                                    ctx.fulltext() + current,
+                                    ctx.fulltext_len() - current,
+                                    char_len,
+                                    type))) {
     } else if (ObFTCharUtil::CharType::USELESS == type) {
       current += char_len; // skip useless char
-    } else if (OB_FAIL(chains_.get_refactored(current, chain)) && OB_HASH_NOT_EXIST != ret) {
-    } else if (OB_HASH_NOT_EXIST == ret) {
-      ret = OB_SUCCESS;
+    } else if (FALSE_IT(chain = chain_starting_at(chain_idx, current))) {
+    } else if (OB_ISNULL(chain)) {
       if (!keep_single()) {
         // skip single word
       } else {
@@ -166,10 +186,12 @@ int ObIKArbitrator::output_result(TokenizeContext &ctx)
         } else {
           // output single word between two token
           while (OB_SUCC(ret) && current < token.offset_) {
-            if (OB_FAIL(ObCharset::first_valid_char(ctx.collation(),
-                                                    ctx.fulltext() + current,
-                                                    ctx.fulltext_len() - current,
-                                                    char_len))) {
+            ObFTCharUtil::CharType ignored_type;
+            if (OB_FAIL(first_char_and_type(ctx,
+                                            ctx.fulltext() + current,
+                                            ctx.fulltext_len() - current,
+                                            char_len,
+                                            ignored_type))) {
               break;
             } else {
               ObIKToken token;
@@ -304,12 +326,12 @@ int ObIKArbitrator::prepare(TokenizeContext &ctx)
 
   int cal_bucket_num = MAX(ctx.fulltext_len() / 100, 10);
   cal_bucket_num = MIN(cal_bucket_num, 100);
-  if (OB_FAIL(chains_.create(cal_bucket_num, ObMemAttr("IK ARBITRATE")))) {
+  if (OB_FAIL(chains_.reserve(cal_bucket_num))) {
   }
   return ret;
 }
 
-ObIKArbitrator::ObIKArbitrator() : alloc_(lib::ObMemAttr("IK Arbitrator")) {}
+ObIKArbitrator::ObIKArbitrator() : alloc_(lib::ObMemAttr("IK Arbitrator")), chains_(&alloc_) {}
 
 int ObIKArbitrator::add_chain(ObIKTokenChain *chain)
 {
@@ -318,14 +340,69 @@ int ObIKArbitrator::add_chain(ObIKTokenChain *chain)
     ret = OB_INVALID_ARGUMENT;
   } else if (chain->list().is_empty()) {
     // no need to add empty chain
-  } else if (OB_FAIL(chains_.set_refactored(chain->min_offset(), chain))) {
+  } else if (OB_LIKELY(0 == chains_.size()
+                       || chains_.at(chains_.size() - 1)->min_offset() < chain->min_offset())) {
+    // The chains reach this function in ascending start offset order, which is what
+    // output_result() relies on to find them with a moving index.
+    if (OB_FAIL(chains_.push_back(chain))) {
+    }
+  } else {
+    // Keep the array sorted even if a chain shows up out of order.
+    int64_t pos = chains_.size();
+    while (pos > 0 && chains_.at(pos - 1)->min_offset() > chain->min_offset()) {
+      --pos;
+    }
+    if (pos > 0 && chains_.at(pos - 1)->min_offset() == chain->min_offset()) {
+      // Same start offset as an existing chain: impossible, the offsets are unique.
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("duplicated chain start offset", K(ret), K(chain->min_offset()));
+    } else {
+      ObIKTokenChain *moved = nullptr;
+      if (OB_FAIL(chains_.push_back(chain))) {
+      } else {
+        for (int64_t i = chains_.size() - 1; i > pos; --i) {
+          moved = chains_.at(i - 1);
+          chains_.at(i) = moved;
+        }
+        chains_.at(pos) = chain;
+      }
+    }
   }
   return ret;
 }
 
+ObIKTokenChain *ObIKArbitrator::chain_starting_at(int64_t &idx, const int64_t offset) const
+{
+  ObIKTokenChain *chain = nullptr;
+  while (idx < chains_.size() && chains_.at(idx)->min_offset() < offset) {
+    ++idx;
+  }
+  if (idx < chains_.size() && chains_.at(idx)->min_offset() == offset) {
+    chain = chains_.at(idx);
+  } else if (idx < chains_.size()) {
+    // Defensive: output_result() walks the text forward, so this only triggers if a
+    // cursor ever moves backwards.
+    int64_t lo = 0;
+    int64_t hi = chains_.size() - 1;
+    while (lo <= hi) {
+      const int64_t mid = (lo + hi) / 2;
+      const int64_t mid_offset = chains_.at(mid)->min_offset();
+      if (mid_offset == offset) {
+        chain = chains_.at(mid);
+        break;
+      } else if (mid_offset < offset) {
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+  }
+  return chain;
+}
+
 ObIKArbitrator::~ObIKArbitrator()
 {
-  chains_.destroy();
+  chains_.reset();
   alloc_.reset();
 }
 } // namespace storage

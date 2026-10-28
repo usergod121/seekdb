@@ -52,6 +52,29 @@ public:
                                  const uint8_t char_len,
                                  CharType &type);
 
+  /**
+   * Length of the first UTF8MB4 character plus the length of that character.
+   *
+   * The IK hot loop splits the text per character, so it needs the character
+   * length and the character class for every character.  Doing that through the
+   * charset function pointers costs a charset lookup, an indirect call to
+   * well_formed_len() and then one decode per candidate class; this entry point
+   * decodes once and compares ranges.  It must only be used for a collation that
+   * belongs to the UTF8MB4 charset, and it reports the same values as
+   * ObCharset::first_valid_char() + classify_first_char().
+   */
+  static int utf8mb4_first_char(ObCollationType coll_type,
+                                const char *buf,
+                                const int64_t buf_size,
+                                int64_t &char_len,
+                                CharType &type);
+
+  /**
+   * Class of one already decoded code point.  Pure comparisons, keeps the order
+   * of the original per class decoders so the result is unchanged.
+   */
+  static OB_INLINE CharType classify_unicode(const ob_wc_t unicode, const bool is_utf16);
+
   static int check_cn_number(ObCollationType coll_type,
                              const char *input,
                              const uint8_t char_len,
@@ -445,29 +468,38 @@ template <ObCharsetType CS_TYPE>
 inline int ObFTCharUtil::do_classify(const char *input, const uint8_t char_len, CharType &type)
 {
   int ret = OB_SUCCESS;
-  bool checker = false;
+  ob_wc_t unicode = 0;
   type = CharType::USELESS;
 
-  if (OB_FAIL(is_alpha<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
-    type = CharType::ENGLISH_LETTER;
-  } else if (OB_FAIL(is_arabic<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
-    type = CharType::ARABIC_LETTER;
-  } else if (OB_FAIL(is_chinese<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
-    type = CharType::CHINESE;
-  } else if (OB_FAIL(is_other_cjk<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
-    type = CharType::OTHER_CJK;
-  } else if (OB_FAIL(is_surrogate_high<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
-    type = CharType::SURROGATE_HIGH;
-  } else if (OB_FAIL(is_surrogate_low<CS_TYPE>(input, char_len, checker))) {
-  } else if (checker) {
-    type = CharType::SURROGATE_LOW;
+  // Decode the character once: the per class checkers used to decode the very
+  // same character again for every class they rejected.
+  if (OB_FAIL(decode_unicode<CS_TYPE>(input, char_len, unicode))) {
+  } else {
+    type = classify_unicode(unicode, CS_TYPE == CHARSET_UTF16 || CS_TYPE == CHARSET_UTF16LE);
   }
   return ret;
+}
+
+inline ObFTCharUtil::CharType ObFTCharUtil::classify_unicode(const ob_wc_t unicode,
+                                                            const bool is_utf16)
+{
+  CharType type = CharType::USELESS;
+  if (ObUnicodeBlockUtils::is_alpha(unicode)) {
+    type = CharType::ENGLISH_LETTER;
+  } else if (ObUnicodeBlockUtils::is_arabic(unicode)) {
+    type = CharType::ARABIC_LETTER;
+  } else if (ObUnicodeBlockUtils::is_chinese(unicode)) {
+    type = CharType::CHINESE;
+  } else if (ObUnicodeBlockUtils::is_other_cjk(unicode)) {
+    type = CharType::OTHER_CJK;
+  } else if (!is_utf16) {
+    // Surrogates are only decodable with an UTF16 charset family.
+  } else if (ObUnicodeBlockUtils::check_high_surrogate(unicode)) {
+    type = CharType::SURROGATE_HIGH;
+  } else if (ObUnicodeBlockUtils::check_low_surrogate(unicode)) {
+    type = CharType::SURROGATE_LOW;
+  }
+  return type;
 }
 
 inline int ObFTCharUtil::classify_first_char(ObCollationType coll_type,
@@ -495,6 +527,73 @@ inline int ObFTCharUtil::classify_first_char(ObCollationType coll_type,
     ret = OB_NOT_SUPPORTED;
     STORAGE_FTS_LOG(WARN, "Not supported charset type", K(ret), K(cs_type));
     break;
+  }
+  return ret;
+}
+
+inline int ObFTCharUtil::utf8mb4_first_char(ObCollationType coll_type,
+                                            const char *buf,
+                                            const int64_t buf_size,
+                                            int64_t &char_len,
+                                            CharType &type)
+{
+  int ret = OB_SUCCESS;
+  // Byte length of a valid UTF8MB4 character, mirroring
+  // ob_valid_mbcharlen_utf8mb4(); 0 means "not decodable here", and that case is
+  // handed to the charset layer so malformed input keeps failing exactly as
+  // before.
+  int64_t len = 0;
+  if (OB_ISNULL(buf) || buf_size <= 0) {
+  } else {
+    const unsigned char *s = reinterpret_cast<const unsigned char *>(buf);
+    const unsigned char c = s[0];
+    if (c < 0x80) {
+      len = 1;
+    } else if (c < 0xc2) {
+      len = 0;
+    } else if (c < 0xe0) {
+      len = (buf_size >= 2 && 0x02 == (s[1] >> 6)) ? 2 : 0;
+    } else if (c < 0xf0) {
+      len = (buf_size >= 3 && 0x02 == (s[1] >> 6) && 0x02 == (s[2] >> 6)
+             && (c >= 0xe1 || s[1] >= 0xa0))
+                ? 3
+                : 0;
+    } else if (c < 0xf5) {
+      len = (buf_size >= 4 && 0x02 == (s[1] >> 6) && 0x02 == (s[2] >> 6) && 0x02 == (s[3] >> 6)
+             && (c >= 0xf1 || s[1] >= 0x90) && (c <= 0xf3 || s[1] <= 0x8f))
+                ? 4
+                : 0;
+    } else {
+      len = 0;
+    }
+
+    if (OB_LIKELY(len > 0)) {
+      ob_wc_t unicode = 0;
+      switch (len) {
+      case 1:
+        unicode = c;
+        break;
+      case 2:
+        unicode = ((ob_wc_t)(c & 0x1f) << 6) | (ob_wc_t)(s[1] ^ 0x80);
+        break;
+      case 3:
+        unicode = ((ob_wc_t)(c & 0x0f) << 12) | ((ob_wc_t)(s[1] ^ 0x80) << 6)
+                  | (ob_wc_t)(s[2] ^ 0x80);
+        break;
+      default:
+        unicode = ((ob_wc_t)(c & 0x07) << 18) | ((ob_wc_t)(s[1] ^ 0x80) << 12)
+                  | ((ob_wc_t)(s[2] ^ 0x80) << 6) | (ob_wc_t)(s[3] ^ 0x80);
+        break;
+      }
+      char_len = len;
+      type = classify_unicode(unicode, false);
+    }
+  }
+
+  if (0 == len && OB_SUCC(ret)) {
+    if (OB_FAIL(ObCharset::first_valid_char(coll_type, buf, buf_size, char_len))) {
+    } else if (OB_FAIL(classify_first_char(coll_type, buf, char_len, type))) {
+    }
   }
   return ret;
 }

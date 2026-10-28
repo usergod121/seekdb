@@ -15,6 +15,7 @@
  */
 
 #include "ob_ddl_task_executor.h"
+#include "lib/cpu/ob_cpu_topology.h"
 #include "lib/ob_running_mode.h"
 #include "lib/thread/ob_thread_name.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
@@ -350,7 +351,17 @@ int ObDDLLocalBuilder::push_task(ObAsyncTask &task)
 
 int64_t ObDDLLocalBuilder::get_thread_cnt_() const
 {
-  return lib::is_mini_mode() ? 1 : 16;
+  // Building an index sstable is a cpu bound scan + sort of the data table, and a
+  // single statement normally queues several independent builds at once: a full
+  // text index is four aux tables (rowkey-doc, doc-rowkey, the inverted index and
+  // the doc-word table) that only depend on the data table, not on each other.
+  // One worker in mini mode therefore turns the statement's runtime into the sum
+  // of all its builds; keep a small pool so that they can run concurrently.  The
+  // cap stays low because every worker holds its own build memory.
+  static const int64_t MINI_MODE_MAX_BUILD_THREAD_CNT = 4;
+  return lib::is_mini_mode()
+      ? MIN(MINI_MODE_MAX_BUILD_THREAD_CNT, common::get_cpu_count())
+      : 16;
 }
 
 }  // end namespace share

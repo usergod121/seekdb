@@ -378,20 +378,46 @@ int ObFTRangeDict::match_with_hit(const ObString &single_word,
   return last_hit.dict_->match_with_hit(single_word, last_hit, hit);
 }
 
+namespace
+{
+// Byte-wise comparison of two single character words.  The ranges are ordered by a
+// binary (CS_TYPE_UTF8MB4_BIN) comparison, and for UTF8MB4 text that order is the
+// byte order, so the ranges can be searched numerically.
+int compare_single_word(const ObString &lhs, const ObString &rhs)
+{
+  const int64_t cmp_len = lhs.length() < rhs.length() ? lhs.length() : rhs.length();
+  int cmp = (0 == cmp_len) ? 0 : memcmp(lhs.ptr(), rhs.ptr(), cmp_len);
+  if (0 == cmp) {
+    cmp = static_cast<int>(lhs.length() - rhs.length());
+  }
+  return cmp;
+}
+} // namespace
+
 int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict *&dict) const
 {
   int ret = OB_SUCCESS;
   bool found = false;
-  for (int i = 0; OB_SUCC(ret) && !found && i < range_dicts_.size(); ++i) {
-    if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                          range_dicts_[i].start_.get_word(),
-                          single_word)
-            <= 0
-        && ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                             range_dicts_[i].end_.get_word(),
-                             single_word)
-               >= 0) {
-      dict = range_dicts_[i].dict_;
+  const int64_t range_cnt = range_dicts_.size();
+  if (OB_LIKELY(!single_word.empty() && range_cnt > 0)) {
+    // The ranges are sorted and do not overlap, so a binary search finds the one
+    // that holds single_word.  This used to be a linear scan with one collation
+    // comparison per range start and end, paid for every character of the text.
+    int64_t lo = 0;
+    int64_t hi = range_cnt - 1;
+    int64_t candidate = -1;
+    while (lo <= hi) {
+      const int64_t mid = (lo + hi) / 2;
+      if (compare_single_word(range_dicts_[mid].start_.get_word(), single_word) > 0) {
+        hi = mid - 1;
+      } else {
+        candidate = mid;
+        lo = mid + 1;
+      }
+    }
+    if (candidate >= 0
+        && compare_single_word(range_dicts_[candidate].end_.get_word(), single_word) >= 0) {
+      dict = range_dicts_[candidate].dict_;
       found = true;
     }
   }

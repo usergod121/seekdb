@@ -32,6 +32,8 @@
 #include "data_plane/fts/dict/ob_gen_dic_loader.h"
 #include "data_plane/fts/ob_fts_parser_property.h"
 
+#include <atomic>
+
 #define USING_LOG_PREFIX SQL_ENG
 #include "sql/engine/expr/ob_expr_json_func_helper.h" // file not self-contained, there're logs inside.
 
@@ -85,8 +87,6 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
   const int64_t ft_word_bkt_cnt = MIN(MAX(param.fulltext_.length() / 2, 2), 997);
   int64_t doc_len = 0;
   storage::ObFTWordMap token_map;
-
-  ObArenaAllocator tmp_parse_alloc(ObMemAttr("Tmp buffer"));
 
   if (TokenizeParam::OUTPUT_MODE::DEFAULT != mode && TokenizeParam::OUTPUT_MODE::ALL != mode) {
     ret = OB_INVALID_ARGUMENT;
@@ -399,6 +399,16 @@ int ObExprTokenize::TokenizeParam::reform_parser_properties(const ObString &prop
   return ret;
 }
 
+namespace
+{
+// Loading the built-in dictionary tables of a parser is process wide and
+// idempotent, and the loader itself remembers that it happened.  Remembering it
+// here as well keeps every TOKENIZE call from rebuilding the loader key, taking
+// the dictionary lock, looking the loader up in its hash map and bumping its
+// reference count, which is a measurable part of a short TOKENIZE call.
+std::atomic<ObCharsetType> g_ik_dict_loaded_charset(ObCharsetType::CHARSET_INVALID);
+} // namespace
+
 int ObExprTokenize::TokenizeParam::try_load_dictionary_for_ik()
 {
   int ret = OB_SUCCESS;
@@ -406,14 +416,22 @@ int ObExprTokenize::TokenizeParam::try_load_dictionary_for_ik()
   storage::ObDicLoaderHandle dic_loader_handle;
   if (OB_FAIL(share::ObFtsIndexBuilderUtil::check_need_to_load_dic(
           parser_name_, need_to_load_dic))) {
-  } else if (need_to_load_dic) {
-    if (OB_FAIL(storage::ObGenDicLoader::get_instance().get_dic_loader(
-                    ObString::make_string(storage::ObFTSLiteral::PARSER_NAME_IK), // currently only ik, use parser_name_ without version suffix
-                    ObCharset::charset_type_by_coll(meta_.get_collation_type()),
-                    dic_loader_handle))) {
+  } else if (!need_to_load_dic) {
+  } else {
+    const ObCharsetType charset = ObCharset::charset_type_by_coll(meta_.get_collation_type());
+    if (ObCharsetType::CHARSET_INVALID == charset) {
+      ret = OB_INVALID_ARGUMENT;
+    } else if (g_ik_dict_loaded_charset.load(std::memory_order_relaxed) == charset) {
+      // already loaded by an earlier statement.
+    } else if (OB_FAIL(storage::ObGenDicLoader::get_instance().get_dic_loader(
+                   ObString::make_string(storage::ObFTSLiteral::PARSER_NAME_IK), // currently only ik, use parser_name_ without version suffix
+                   ObCharset::charset_type_by_coll(meta_.get_collation_type()),
+                   dic_loader_handle))) {
     } else if (OB_UNLIKELY(!dic_loader_handle.is_valid())) {
       ret = OB_ERR_UNEXPECTED;
     } else if (OB_FAIL(dic_loader_handle.get_loader()->try_load_dictionary_in_trans())) {
+    } else {
+      g_ik_dict_loaded_charset.store(charset, std::memory_order_relaxed);
     }
   }
   return ret;
