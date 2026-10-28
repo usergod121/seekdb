@@ -66,6 +66,7 @@
 #include "observer/virtual_table/ob_all_virtual_tx_scheduler_stat.h"
 #include "observer/virtual_table/ob_all_virtual_tx_ctx_mgr_stat.h"
 #include "observer/virtual_table/ob_all_virtual_engine_table.h"
+#include "observer/virtual_table/ob_all_virtual_ai_column.h"
 #include "observer/virtual_table/ob_all_virtual_files_table.h"
 #include "observer/virtual_table/ob_all_virtual_ls_info.h"
 #include "observer/virtual_table/ob_plan_cache_plan_explain.h"
@@ -1060,6 +1061,14 @@ int ObVTIterCreator::create_vt_iter(ObVTableScanParam &params,
             if (OB_SUCC(NEW_VIRTUAL_TABLE(ObAllVirtualEngineTable, all_engines_table))) {
               all_engines_table->set_allocator(&allocator);
               vt_iter = static_cast<ObVirtualTableIterator *>(all_engines_table);
+            }
+            break;
+          }
+          case OB_ALL_AI_COLUMN_TID: {
+            ObAllVirtualAiColumn *all_ai_column = NULL;
+            if (OB_SUCC(NEW_VIRTUAL_TABLE(ObAllVirtualAiColumn, all_ai_column))) {
+              all_ai_column->set_allocator(&allocator);
+              vt_iter = static_cast<ObVirtualTableIterator *>(all_ai_column);
             }
             break;
           }

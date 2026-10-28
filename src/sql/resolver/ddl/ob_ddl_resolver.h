@@ -23,6 +23,7 @@
 #include "share/schema/ob_table_schema.h"
 #include "share/ob_rpc_struct.h"
 #include "share/schema/ob_schema_struct.h"
+#include "share/ai_service/ob_ai_service_struct.h"
 #include "common/sql_mode/ob_sql_mode.h"
 #include "sql/resolver/ddl/ob_table_stmt.h"
 #include "sql/resolver/ddl/ob_alter_table_stmt.h"
@@ -57,6 +58,7 @@ enum NUMCHILD {
   CREATE_TABLE_NUM_CHILD = 8,
   CREATE_TABLE_AS_SEL_NUM_CHILD = 11,
   COLUMN_DEFINITION_NUM_CHILD = 4,
+  AI_COLUMN_DEFINITION_NUM_CHILD = 5,
   COLUMN_DEF_NUM_CHILD = 3,
   INDEX_NUM_CHILD = 5,
   GEN_COLUMN_DEFINITION_NUM_CHILD = 7
@@ -519,6 +521,35 @@ protected:
       const bool is_create_table_as = false,
       const bool allow_has_default = true);
   int drop_not_null_constraint(const share::schema::ObColumnSchemaV2 &column);
+  int resolve_ai_column(share::schema::ObColumnSchemaV2 &column,
+                        ParseNode *ai_column_node,
+                        ParseNode *type_node,
+                        const ObTableSchema &table_schema);
+  int resolve_ai_column_options(ParseNode *options_node, share::ObAiColumnSpec &spec);
+  int check_ai_column_expr(const ParseNode &expr_node,
+                           const ParseNode *type_node,
+                           const ObTableSchema &table_schema);
+  int add_ai_column_hidden_columns(share::schema::ObTableSchema &table_schema);
+  // The definition of an ai column is normally stored on the ai column. A column whose type
+  // owns its extended type info (a vector column keeps its dimension there, and the vector
+  // dimension reader rejects any array whose size is not one) cannot carry it, so the
+  // definition is remembered here and attached to that column's hidden result spec column.
+  struct ObPendingAiColumnSpec
+  {
+    ObPendingAiColumnSpec() : column_name_(), spec_() {}
+    ObPendingAiColumnSpec(const common::ObString &column_name, const share::ObAiColumnSpec &spec)
+        : column_name_(column_name), spec_(spec) {}
+    common::ObString column_name_;
+    share::ObAiColumnSpec spec_;
+  };
+  int attach_ai_column_spec(share::schema::ObColumnSchemaV2 &hidden_column,
+                            const common::ObString &ai_column_name,
+                            const share::schema::ObColumnSchemaV2 &ai_column);
+  common::ObSEArray<ObPendingAiColumnSpec, 4> pending_ai_specs_;
+  int build_ai_column_hidden_column(const share::ObAiColumnSpec::HiddenColumnType type,
+                                    const common::ObString &hidden_column_name,
+                                    const share::schema::ObTableSchema &table_schema,
+                                    share::schema::ObColumnSchemaV2 &hidden_column);
   int resolve_normal_column_attribute_constr_not_null(ObColumnSchemaV2 &column,
                                                       ParseNode *attrs_node,
                                                       ObColumnResolveStat &resolve_stat);

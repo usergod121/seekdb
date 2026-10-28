@@ -72,6 +72,20 @@ protected:
 
   int resolve_additional_assignments(common::ObIArray<ObTableAssignment> &table_assigns,
                                      const ObStmtScope scope);
+  // Appends the invalidation of the ai columns an update touches: the ai column is set to null
+  // and its hidden state column goes back to 0. Does nothing for a table without an ai column.
+  int resolve_ai_column_assignments(common::ObIArray<ObTableAssignment> &table_assigns,
+                                    const int64_t idx,
+                                    const TableItem &table_item,
+                                    const share::schema::ObTableSchema &table_schema);
+  int append_ai_column_invalidation(common::ObIArray<ObTableAssignment> &table_assigns,
+                                    const TableItem &table_item,
+                                    const share::schema::ObTableSchema &table_schema,
+                                    const share::schema::ObColumnSchemaV2 &ai_column);
+  int add_ai_column_assignment(common::ObIArray<ObTableAssignment> &table_assigns,
+                               const TableItem &table_item,
+                               const share::schema::ObColumnSchemaV2 &column,
+                               ObRawExpr *value_expr);
   int generate_wrapper_expr_for_assignemnts(common::ObIArray<ObAssignment> &assigns,
                                             bool has_before_trigger);
 

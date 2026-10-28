@@ -2,6 +2,15 @@
 
 SQL_UNITY_GROUPS = [
     struct(
+        name = "ob_sql_ai_column_0",
+        language = "c++",
+        srcs = [
+            "src/sql/resolver/ob_ai_column_access.cpp",
+        ],
+        generated_srcs = [],
+        external_srcs = [],
+    ),
+    struct(
         name = "ob_sql_file_sql_0",
         language = "c++",
         srcs = [
@@ -327,6 +336,7 @@ SQL_UNITY_GROUPS = [
         name = "ob_sql_engine_dml_0",
         language = "c++",
         srcs = [
+            "src/sql/engine/dml/ob_ai_column_task.cpp",
             "src/sql/engine/dml/ob_conflict_checker.cpp",
             "src/sql/engine/dml/ob_dml_ctx_define.cpp",
             "src/sql/engine/dml/ob_dml_service.cpp",

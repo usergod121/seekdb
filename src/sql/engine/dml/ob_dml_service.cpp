@@ -25,6 +25,8 @@
 #include "sql/das/ob_das_lock_op.h"
 #include "sql/das/ob_das_utils.h"
 #include "sql/engine/dml/ob_trigger_handler.h"
+#include "sql/engine/dml/ob_ai_column_task.h"
+#include "sql/ob_sql_context.h"
 #include "share/autoincrement/ob_i_tablet_autoincrement_service.h"
 #include "data_plane/lob/ob_lob_read.h"
 #include "data_plane/transaction/ob_i_transaction_service.h"
@@ -41,6 +43,19 @@ using namespace share;
 using namespace transaction;
 namespace sql
 {
+
+namespace
+{
+bool table_has_ai_column(const share::schema::ObTableSchema &table_schema)
+{
+  bool has_ai_column = false;
+  for (share::schema::ObTableSchema::const_column_iterator iter = table_schema.column_begin();
+       !has_ai_column && iter != table_schema.column_end(); ++iter) {
+    has_ai_column = (NULL != *iter && (*iter)->is_ai_column());
+  }
+  return has_ai_column;
+}
+} // anonymous namespace
 
 bool ObDMLService::check_cascaded_reference(const ObExpr *expr, const ObExprPtrIArray &row)
 {
@@ -630,6 +645,28 @@ int ObDMLService::process_insert_row(const ObInsCtDef &ins_ctdef,
                                       dml_op))) {
     } else if (OB_FAIL(check_filter_row(ins_ctdef, dml_op.get_eval_ctx(), is_skipped))) {
     }
+    // an ai column has no value before the worker generated it, so the row version of this
+    // insert gets one generation task per ai column, written inside the transaction of the
+    // user: the tasks are visible to it before the commit and vanish again on rollback
+    if (OB_SUCC(ret) && !is_skipped) {
+      const share::schema::ObTableSchema *ai_table_schema = NULL;
+      ObSchemaGetterGuard *schema_guard = NULL;
+      const ObSqlCtx *sql_ctx = NULL;
+      if (OB_ISNULL(sql_ctx = dml_op.get_exec_ctx().get_sql_ctx())
+          || OB_ISNULL(schema_guard = sql_ctx->schema_guard_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("the schema guard of the statement is not available", K(ret));
+      } else if (OB_FAIL(schema_guard->get_table_schema(ref_table_id, ai_table_schema))) {
+        LOG_WARN("fail to get the table schema", K(ret), K(ref_table_id));
+      } else if (OB_ISNULL(ai_table_schema)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("the table schema is not found", K(ret), K(ref_table_id));
+      } else if (!table_has_ai_column(*ai_table_schema)) {
+        // a table without an ai column never takes the task path
+      } else if (OB_FAIL(ObAiColumnTask::insert_row_tasks(dml_op, *ai_table_schema, ins_ctdef))) {
+        LOG_WARN("fail to write the tasks of the ai columns", K(ret), K(ref_table_id));
+      }
+    }
 
   }
   return ret;
@@ -730,6 +767,26 @@ int ObDMLService::process_delete_row(const ObDelCtDef &del_ctdef,
           dml_op, del_ctdef.das_base_ctdef_, del_ctdef.trig_ctdef_, del_rtdef.trig_rtdef_))) {
       }
     }
+    // the generation tasks of the row go with it, inside the same transaction
+    if (OB_SUCC(ret) && !is_skipped) {
+      const share::schema::ObTableSchema *ai_table_schema = NULL;
+      ObSchemaGetterGuard *schema_guard = NULL;
+      const ObSqlCtx *sql_ctx = NULL;
+      if (OB_ISNULL(sql_ctx = dml_op.get_exec_ctx().get_sql_ctx())
+          || OB_ISNULL(schema_guard = sql_ctx->schema_guard_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("the schema guard of the statement is not available", K(ret));
+      } else if (OB_FAIL(schema_guard->get_table_schema(ref_table_id, ai_table_schema))) {
+        LOG_WARN("fail to get the table schema", K(ret), K(ref_table_id));
+      } else if (OB_ISNULL(ai_table_schema)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("the table schema is not found", K(ret), K(ref_table_id));
+      } else if (!table_has_ai_column(*ai_table_schema)) {
+        // a table without an ai column never takes the task path
+      } else if (OB_FAIL(ObAiColumnTask::delete_row_tasks(dml_op, *ai_table_schema, del_ctdef))) {
+        LOG_WARN("fail to delete the tasks of the ai columns", K(ret), K(ref_table_id));
+      }
+    }
     LOG_DEBUG("process delete row", K(ret), K(is_skipped),
                "old_row", ROWEXPR2STR(dml_op.get_eval_ctx(), del_ctdef.old_row_));
   }
@@ -825,6 +882,30 @@ int ObDMLService::process_update_row(const ObUpdCtDef &upd_ctdef,
   if (OB_FAIL(ret)) {
   } else if (!is_skipped && upd_rtdef.has_table_cycle_) {
     ret = OB_ERR_ROW_IS_REFERENCED;
+  }
+
+  // an update that assigns an ai column invalidated it: the resolver appends that assignment
+  // when a column the ai column depends on, or a rowkey column, is assigned. The tasks of the
+  // row version follow it in the transaction of the user.
+  if (OB_SUCC(ret) && !is_skipped && upd_ctdef.is_primary_index_ && upd_rtdef.is_row_changed_) {
+    const uint64_t table_id = upd_ctdef.das_base_ctdef_.index_tid_;
+    const share::schema::ObTableSchema *ai_table_schema = NULL;
+    ObSchemaGetterGuard *schema_guard = NULL;
+    const ObSqlCtx *sql_ctx = NULL;
+    if (OB_ISNULL(sql_ctx = dml_op.get_exec_ctx().get_sql_ctx())
+        || OB_ISNULL(schema_guard = sql_ctx->schema_guard_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("the schema guard of the statement is not available", K(ret));
+    } else if (OB_FAIL(schema_guard->get_table_schema(table_id, ai_table_schema))) {
+      LOG_WARN("fail to get the table schema", K(ret), K(table_id));
+    } else if (OB_ISNULL(ai_table_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("the table schema is not found", K(ret), K(table_id));
+    } else if (!table_has_ai_column(*ai_table_schema)) {
+      // a table without an ai column never takes the task path
+    } else if (OB_FAIL(ObAiColumnTask::update_row_tasks(dml_op, *ai_table_schema, upd_ctdef))) {
+      LOG_WARN("fail to replace the tasks of the ai columns", K(ret), K(table_id));
+    }
   }
 
   if (OB_SUCC(ret) && !is_skipped) {

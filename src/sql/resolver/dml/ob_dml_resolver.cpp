@@ -40,6 +40,7 @@
 #include "sql/engine/expr/ob_expr_regexp.h"
 #include "sql/resolver/dcl/ob_dcl_resolver.h"
 #include "sql/resolver/ddl/ob_ddl_resolver.h"
+#include "sql/resolver/ob_ai_column_access.h"
 #include "sql/hybrid_search/ob_hybrid_search_executor.h"
 
 namespace oceanbase
@@ -1885,6 +1886,10 @@ int ObDMLResolver::resolve_basic_column_item(const TableItem &table_item,
     } else if (OB_FAIL(get_column_schema(tid, column_name, col_schema, include_hidden))) {
     } else if (OB_ISNULL(col_schema)) {
       ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(ObAiColumnAccess::check_readable(*session_info_, *table_schema,
+                                                        *col_schema))) {
+      // an ai column is readable only when the whole table has its values, see
+      // ai_column_strict_read
     } else if (OB_FAIL(ObRawExprUtils::build_column_expr(*params_.expr_factory_, *col_schema, session_info_, col_expr))) {
     } else if (OB_FAIL(table_schema->is_unique_key_column(*schema_guard,
                                                           col_schema->get_column_id(),

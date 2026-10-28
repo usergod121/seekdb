@@ -2274,6 +2274,9 @@ typedef enum ObItemType
   T_FORK_DATABASE = 4917,
   T_DIFF_TABLE = 4918,
   T_MERGE_TABLE = 4919,
+  T_AI_COLUMN = 4921, // ai column clause of a column definition
+  T_AI_COLUMN_OPTION = 4922, // name = value option of an ai column clause
+  T_AI_COLUMN_RETRY = 4923, // retry action of alter table: target column and its predicate
   T_MAX //Attention: add a new type before T_MAX
 } ObItemType;
 

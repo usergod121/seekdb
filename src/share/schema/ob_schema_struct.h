@@ -106,8 +106,15 @@ static const uint64_t OB_MIN_ID  = 0;//used for lower_bound
 #define RESERVED_COLUMN_FLAG_4 (INT64_C(1) << 4)
 #define RESERVED_COLUMN_FLAG_5 (INT64_C(1) << 5)
 #define INVISIBLE_COLUMN_FLAG (INT64_C(1) << 6)
+// the column is an ai column, its definition is stored in its extended type info
+#define AI_COLUMN_FLAG (INT64_C(1) << 7)
 // The logic of the new table without a primary key changes the column (partition key) to the primary key
 #define HEAP_ALTER_ROWKEY_FLAG (INT64_C(1) << 8)
+// The column carries the definition of an ai column without being one: the hidden result
+// spec column of an ai column owns that definition whenever the ai column's own type needs
+// its extended type info for itself (a vector column keeps its dimension there), so the
+// definition must be persisted for this column too.
+#define AI_COLUMN_SPEC_FLAG (INT64_C(1) << 9)
 #define HEAP_TABLE_SORT_ROWKEY_FLAG (INT64_C(1) << 12) // 1:sortkey in new no pk table
 #define COLUMN_NOT_NULL_CONSTRAINT_FLAG (INT64_C(1) << 13)
 #define NOT_NULL_ENABLE_FLAG (INT64_C(1) << 14)

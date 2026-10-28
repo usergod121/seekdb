@@ -1195,6 +1195,9 @@ public:
       lock_session_id_(0),
       lock_session_create_ts_(0),
       lock_priority_(transaction::tablelock::ObTableLockPriority::NORMAL),
+      is_ai_column_retry_(false),
+      ai_column_retry_column_(),
+      ai_column_retry_predicate_(),
       data_version_(0)
   {
   }
@@ -1301,6 +1304,13 @@ public:
   uint32_t lock_session_id_;
   int64_t lock_session_create_ts_;
   transaction::tablelock::ObTableLockPriority lock_priority_;
+  // ALTER TABLE ... RETRY AI COLUMN <column> [WHERE <predicate>] asks for a new generation of
+  // one ai column of the rows the predicate selects, it changes no schema. The resolver keeps
+  // the target column and the text of the predicate here, the executor runs the regeneration
+  // and never reaches the ddl service with it.
+  bool is_ai_column_retry_;
+  common::ObString ai_column_retry_column_;
+  common::ObString ai_column_retry_predicate_;
   uint64_t data_version_;
   int serialize_index_args(char *buf, const int64_t data_len, int64_t &pos) const;
   int deserialize_index_args(const char *buf, const int64_t data_len, int64_t &pos);

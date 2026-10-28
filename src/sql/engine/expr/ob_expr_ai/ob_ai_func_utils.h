@@ -353,6 +353,13 @@ public:
    virtual ~ObAIFuncModel() {}
    // completion
    int call_completion(ObString &prompt, ObJsonObject *config, ObString &result);
+   // completion asked with an explicit system prompt. An ai column sends the expression of
+   // the column as the system prompt and the value of that expression for the row as the
+   // user message, in place of the single prompt of ai_complete.
+   int call_completion(ObString &system_prompt,
+                       ObString &user_content,
+                       ObJsonObject *config,
+                       ObString &result);
    int call_completion_vector(ObArray<ObString> &prompts, ObJsonObject *config, ObArray<ObString> &results);
    // dense_embedding
    int call_dense_embedding(ObString &content, ObJsonObject *config, ObString &result);

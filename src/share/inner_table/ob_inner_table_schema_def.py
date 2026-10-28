@@ -32,8 +32,8 @@
 #
 # 9. For compatibility, when add new column for system table, new column's definition should be "not null + default value" or "nullable".
 #    Specially, when column types are as follows:
-#    1. double、number：default value is not supported, so new column definition should be "nullable".
-#    2. longtext、timestamp：mysql can't cast default value to specified column type, so new column definition should be "nullable".
+#    1. double銆乶umber锛歞efault value is not supported, so new column definition should be "nullable".
+#    2. longtext銆乼imestamp锛歮ysql can't cast default value to specified column type, so new column definition should be "nullable".
 #
 # Add internal table encoding guidelines see:
 ################################################################################
@@ -1368,6 +1368,29 @@ def_table_schema(
 # 231: __all_partition_member_list # abandoned in 4.0
 
 # 234: __all_tenant_partition_meta_table # abandoned in 4.0.
+
+# One row per pending generation task of an ai column. The dml writes, updates and removes
+# these rows inside the transaction that changes the generated value, so the task rows are
+# always consistent with the row they belong to. The rowkey is what the dml can compute from
+# the row alone, so a row version is addressed without knowing its request id.
+def_table_schema(
+  owner = 'shenyunlong.syl',
+  table_name     = '__all_ai_column_task',
+  table_id       = '1034',
+  table_type = 'SYSTEM_TABLE',
+  gm_columns = ['gmt_create', 'gmt_modified'],
+  rowkey_columns = [
+    ('table_id', 'int'),
+    ('column_id', 'int'),
+    ('rowkey_predicate', 'varchar:512')
+  ],
+  normal_columns = [
+    ('request_id', 'int', 'false', '0'),
+    ('state', 'int', 'true', '0'),
+    ('retry_count', 'int', 'true', '0'),
+    ('eligible_ts', 'timestamp')
+  ]
+  )
 
 all_tenant_role_grantee_map_def = dict(
   owner = 'sean.yyj',
@@ -2795,6 +2818,31 @@ def_table_schema(
   ('collation_connection', 'varchar:MAX_CHARSET_LENGTH'),
   ('collation_database', 'varchar:MAX_CHARSET_LENGTH'),
   ('sql_mode', 'varchar:MAX_CHARSET_LENGTH')
+  ]
+  )
+
+# The definition of every ai column. It is derived from the ai columns of the table
+# schemas, the hidden state/request/result spec columns are hidden columns of the same
+# table whose names are derived from the ai column name.
+def_table_schema(
+  owner = 'shenyunlong.syl',
+  table_name     = '__all_ai_column',
+  table_id       = '10020',
+  table_type = 'VIRTUAL_TABLE',
+  gm_columns = [],
+  rowkey_columns = [
+  ('table_id', 'int'),
+  ('column_id', 'int')
+  ],
+  normal_columns = [
+  ('column_name', 'varchar:OB_MAX_COLUMN_NAME_LENGTH'),
+  ('expr', 'varchar:OB_MAX_VARCHAR_LENGTH'),
+  ('normalized_expr', 'varchar:OB_MAX_VARCHAR_LENGTH'),
+  ('sync_mode', 'varchar:MAX_CHARSET_LENGTH'),
+  ('max_retries', 'int'),
+  ('state_column_id', 'int'),
+  ('request_column_id', 'int'),
+  ('result_spec_column_id', 'int')
   ]
   )
 

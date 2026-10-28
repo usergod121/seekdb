@@ -588,6 +588,11 @@ int ObAlterTableResolver::resolve_action_list(const ParseNode &node)
             }
             break;
         }
+        case T_AI_COLUMN_RETRY: {
+            if (OB_FAIL(resolve_ai_column_retry(*action_node, node.num_child_))) {
+            }
+            break;
+        }
         default: {
             ret = OB_ERR_UNEXPECTED;
             SQL_RESV_LOG(WARN, "Unknown alter table action %d", K_(action_node->type), K(ret));
@@ -3457,11 +3462,90 @@ int ObAlterTableResolver::resolve_add_column(const ParseNode &node, ObColumnName
         if (OB_SUCC(ret)) {
           if (OB_FAIL(alter_table_stmt->add_column(alter_column_schema))) {
           } else if (FALSE_IT(alter_table_stmt->set_sql_mode(session_info_->get_sql_mode()))) {
+          } else if (alter_column_schema.is_ai_column()
+                     && OB_FAIL(add_ai_column_hidden_columns(alter_column_schema))) {
           }
         }
       }
     }
     add_column_cnt_++;
+  }
+  return ret;
+}
+
+int ObAlterTableResolver::add_ai_column_hidden_columns(const AlterColumnSchema &ai_column)
+{
+  int ret = OB_SUCCESS;
+  ObAlterTableStmt *alter_table_stmt = get_alter_table_stmt();
+  if (OB_ISNULL(alter_table_stmt) || OB_ISNULL(table_schema_)) {
+    ret = OB_ERR_UNEXPECTED;
+    SQL_RESV_LOG(WARN, "alter table stmt or table schema is null", K(ret));
+  }
+  // an ai column value is materialized by three hidden columns, the column ids are
+  // assigned by the ddl service
+  for (int64_t type = share::ObAiColumnSpec::HIDDEN_STATE_COLUMN;
+       OB_SUCC(ret) && type < share::ObAiColumnSpec::HIDDEN_COLUMN_MAX; ++type) {
+    char name_buf[OB_MAX_COLUMN_NAME_LENGTH];
+    ObString hidden_column_name;
+    AlterColumnSchema hidden_column;
+    if (OB_FAIL(share::ObAiColumnSpec::build_hidden_column_name(
+                  static_cast<share::ObAiColumnSpec::HiddenColumnType>(type),
+                  ai_column.get_column_name_str(),
+                  name_buf, sizeof(name_buf), hidden_column_name))) {
+    } else if (OB_FAIL(build_ai_column_hidden_column(
+                 static_cast<share::ObAiColumnSpec::HiddenColumnType>(type),
+                 hidden_column_name, *table_schema_, hidden_column))) {
+    } else {
+      hidden_column.alter_type_ = OB_DDL_ADD_COLUMN;
+      if (OB_FAIL(alter_table_stmt->add_column(hidden_column))) {
+      }
+    }
+  }
+  return ret;
+}
+
+int ObAlterTableResolver::resolve_ai_column_retry(const ParseNode &node, const int64_t action_count)
+{
+  int ret = OB_SUCCESS;
+  ObAlterTableStmt *alter_table_stmt = get_alter_table_stmt();
+  const ParseNode *column_node = NULL;
+  if (OB_ISNULL(alter_table_stmt) || OB_ISNULL(table_schema_)) {
+    ret = OB_ERR_UNEXPECTED;
+    SQL_RESV_LOG(WARN, "alter table stmt or table schema is null", K(ret));
+  } else if (OB_UNLIKELY(T_AI_COLUMN_RETRY != node.type_
+                         || node.num_child_ < 2
+                         || OB_ISNULL(node.children_)
+                         || OB_ISNULL(column_node = node.children_[0])
+                         || OB_ISNULL(column_node->str_value_))) {
+    ret = OB_ERR_UNEXPECTED;
+    SQL_RESV_LOG(WARN, "invalid ai column retry node", K(ret), K(node.type_),
+                 K(node.num_child_));
+  } else if (action_count > 1) {
+    // the retry is not a schema change, so it can not share the statement with one
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "combining AI COLUMN RETRY with another ALTER action");
+  } else {
+    const ObString column_name(column_node->str_len_, column_node->str_value_);
+    const ObColumnSchemaV2 *column = NULL;
+    if (OB_ISNULL(column = table_schema_->get_column_schema(column_name))) {
+      ret = OB_ERR_BAD_FIELD_ERROR;
+      SQL_RESV_LOG(WARN, "the retried column is not a column of the table", K(ret),
+                   K(column_name), K(table_schema_->get_table_name_str()));
+    } else if (!column->is_ai_column()) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "retrying a column that is not an AI column");
+    } else {
+      obcall::ObAlterTableArg &alter_table_arg = alter_table_stmt->get_alter_table_arg();
+      alter_table_arg.is_ai_column_retry_ = true;
+      alter_table_arg.ai_column_retry_column_ = column_name;
+      // the predicate is kept as the text of the statement, the executor runs it as the
+      // predicate of the statements that regenerate the selected rows
+      if (NULL != node.children_[1] && node.str_len_ > 0 && NULL != node.str_value_) {
+        alter_table_arg.ai_column_retry_predicate_.assign_ptr(node.str_value_, node.str_len_);
+      } else {
+        alter_table_arg.ai_column_retry_predicate_.reset();
+      }
+    }
   }
   return ret;
 }

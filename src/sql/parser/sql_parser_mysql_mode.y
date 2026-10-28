@@ -336,7 +336,7 @@ END_P SET_VAR DELIMITER
         REPEATABLE RESET RESPECT RESTART RESTORE RESUME RETURNED_SQLSTATE RETURNS RETURNING REVERSE
         REWRITE ROLLBACK ROLLUP ROUTINE ROW ROWID ROW_COUNT ROW_FORMAT ROWS RTREE
         RUN RECYCLEBIN REPLICATION ROTATE ROW_NUMBER RUDUNDANT RECURSIVE RANDOM REDO_TRANSPORT_OPTIONS
-        RANK READ_ONLY RECOVERY REJECT ROLE
+        RANK READ_ONLY RECOVERY REJECT ROLE RETRY
 
         SAMPLE SAVEPOINT SCALARS SCHEMA_NAME SCN SCOPE SCORE SECOND SECURITY SEED
         SEMISTRUCT_ENCODING_TYPE SERIAL SERIALIZABLE SESSION SESSION_USER SET_TP SHARE SHARED SHUTDOWN SIGNED
@@ -421,6 +421,7 @@ END_P SET_VAR DELIMITER
 %type <node> opt_equal_mark opt_default_mark read_only_or_write not not2
 %type <node> int_or_decimal
 %type <node> opt_column_attribute_list column_attribute column_attribute_list opt_column_default_value opt_column_default_value_list
+%type <node> opt_ai_column_clause opt_ai_column_with_list ai_column_with_list ai_column_with_item
 %type <node> show_stmt from_or_in columns_or_fields database_or_schema index_or_indexes_or_keys opt_from_or_in_database_clause opt_show_condition opt_desc_column_option opt_status opt_storage opt_show_engine check_table_options check_table_option
 %type <node> prepare_stmt stmt_name preparable_stmt
 %type <node> variable_set_stmt var_and_val_list var_and_val to_or_eq set_expr_or_default sys_var_and_val
@@ -4832,13 +4833,13 @@ SIMPLE { $$[0] = T_SIMPLE; }
 ;
 
 column_definition:
-column_definition_ref data_type opt_column_attribute_list opt_column_reference opt_position_column
+column_definition_ref data_type opt_column_attribute_list opt_ai_column_clause opt_column_reference opt_position_column
 {
-  (void)($4);
+  (void)($5);
   ParseNode *attributes = NULL;
   merge_nodes(attributes, result, T_COLUMN_ATTRIBUTES, $3);
   set_data_type_collation($2, attributes, false, true);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_DEFINITION, 4, $1, $2, attributes, $5);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_DEFINITION, 5, $1, $2, attributes, $6, $4);
 }
 | column_definition_ref data_type opt_collation opt_generated_keyname AS '(' expr ')' opt_storage_type opt_generated_column_attribute_list opt_column_reference opt_position_column
 {
@@ -4877,9 +4878,57 @@ column_definition_ref data_type opt_column_attribute_list opt_column_reference o
 }
 ;
 
-constraint_definition:
-CONSTRAINT opt_constraint_name CHECK '(' expr ')' check_state
+/*
+ * [AI COLUMN ( <expression> ) [WITH ( <name> = <value>, ... )]] of a column.
+ * The expression is the definition of how the column value is produced.
+ */
+opt_ai_column_clause:
+AI COLUMN '(' expr ')' opt_ai_column_with_list
 {
+  dup_expr_string($4, result, @4.first_column, @4.last_column);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN, 2, $4, $6);
+}
+| /*empty*/
+{
+  $$ = NULL;
+}
+;
+
+opt_ai_column_with_list:
+/*empty*/
+{
+  $$ = NULL;
+}
+| WITH '(' ai_column_with_list ')'
+{
+  $$ = $3;
+}
+;
+
+ai_column_with_list:
+ai_column_with_item
+{
+  $$ = $1;
+}
+| ai_column_with_list ',' ai_column_with_item
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3);
+}
+;
+
+ai_column_with_item:
+NAME_OB COMP_EQ INTNUM
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_OPTION, 2, $1, $3);
+}
+| NAME_OB COMP_EQ STRING_VALUE
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_OPTION, 2, $1, $3);
+}
+;
+
+constraint_definition:
+CONSTRAINT opt_constraint_name CHECK '(' expr ')' check_state{
   ParseNode *constraint_node = NULL;
   dup_expr_string($5, result, @5.first_column, @5.last_column);
   malloc_non_terminal_node(constraint_node, result->malloc_pool_, T_CHECK_CONSTRAINT, 1, $2);
@@ -14741,6 +14790,15 @@ DROP CONSTRAINT constraint_name
   (void)($3);
   $$ = NULL;
 }
+| RETRY AI COLUMN column_name opt_where
+{
+  // the text of the predicate is what the executor runs as the predicate of the statement
+  // that regenerates the selected rows, so the retry keeps it verbatim
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_RETRY, 2, $4, $5);
+  if (NULL != $5) {
+    dup_expr_string($$, result, @5.first_column, @5.last_column);
+  }
+}
 ;
 
 algorithm_opt:
@@ -18181,6 +18239,7 @@ ACCOUNT
 |       INCONSISTENT 
 |       INDIVIDUAL
 |       HYBRID_SEARCH
+|       RETRY
 ;
 
 unreserved_keyword_special:

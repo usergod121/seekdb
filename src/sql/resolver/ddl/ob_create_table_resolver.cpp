@@ -950,6 +950,13 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
       } else if (OB_FAIL(resolve_primary_key_node_in_heap_table(primary_node_in_heap_table, stats, resolved_cols))) {
       }
     }
+
+    // every ai column is materialized with its hidden columns
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(add_ai_column_hidden_columns(table_schema))) {
+        SQL_RESV_LOG(WARN, "fail to add the hidden columns of the ai columns", K(ret));
+      }
+    }
   }
   return ret;
 }

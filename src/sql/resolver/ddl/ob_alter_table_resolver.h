@@ -178,6 +178,10 @@ private:
 
 
   int resolve_pos_column(const ParseNode *node, share::schema::AlterColumnSchema &alter_column_schema);
+  int add_ai_column_hidden_columns(const share::schema::AlterColumnSchema &ai_column);
+  // ALTER TABLE <table> RETRY AI COLUMN <column> [WHERE <predicate>]: the target column and
+  // the text of the predicate are handed to the executor, the clause changes no schema.
+  int resolve_ai_column_retry(const ParseNode &node, const int64_t action_count);
   int fill_column_schema_according_stat(const ObColumnResolveStat &stat,
                                         share::schema::AlterColumnSchema &alter_column_schema);
   int resolve_partitioned_partition(const ParseNode *node,

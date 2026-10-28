@@ -38,6 +38,7 @@
 #include "sql/resolver/ddl/ob_purge_stmt.h"
 #include "sql/resolver/ddl/ob_optimize_stmt.h"
 #include "sql/resolver/dml/ob_delete_resolver.h"
+#include "sql/resolver/ob_ai_column_access.h"
 #include "sql/engine/cmd/ob_partition_executor_utils.h"
 
 #include "sql/printer/ob_select_stmt_printer.h"
@@ -768,6 +769,21 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
       OZ (query::serialize_root_service_call(
           [&]{ return ctx.root_command_service().alter_trigger(stmt.get_tg_arg()); }),
           GCTX.self_addr());
+    }
+  } else if (alter_table_arg.is_ai_column_retry_) {
+    // ALTER TABLE ... RETRY AI COLUMN ... regenerates the value of one ai column of the rows
+    // its predicate selects: the values are dropped and the generation is queued again, so
+    // there is no schema change to hand to the ddl service
+    int64_t retried_rows = 0;
+    if (OB_FAIL(ObAiColumnAccess::retry(alter_table_arg.alter_table_schema_.get_table_id(),
+                                        alter_table_arg.ai_column_retry_column_,
+                                        alter_table_arg.ai_column_retry_predicate_,
+                                        retried_rows))) {
+      LOG_WARN("fail to retry an ai column", K(ret),
+               K(alter_table_arg.ai_column_retry_column_));
+    } else {
+      LOG_INFO("retried the rows of an ai column", K(retried_rows),
+               K(alter_table_arg.ai_column_retry_column_));
     }
   } else {
     ObSQLSessionInfo *my_session = NULL;

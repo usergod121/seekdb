@@ -219,6 +219,7 @@ namespace observer
 
 class ObServerOptions;
 class ObSchemaRefreshSchedulerAdapter;
+class ObAiColumnWorker;
 
 // This the class definition of ObAddr which responds the server
 // itself. It's designed as a singleton in program. This class is
@@ -677,6 +678,7 @@ public:
     return &ob_service_;
   }
   omt::ObAiService * ai_service() { return mods_ai_service_; }
+  ObAiColumnWorker * ai_column_worker() { return mods_ai_column_worker_; }
   share::ObChangeStreamMgr * change_stream_mgr() { return mods_change_stream_mgr_; }
   // Explicit module lifecycle (ObServer owns modules; defined in ob_server_runtime_controller.cpp).
   int obs_construct_modules();
@@ -754,6 +756,7 @@ private:
   rootserver::ObSystemPackageLoadService * mods_system_package_load_service_ = nullptr;
   rootserver::ObDDLScheduler * mods_ddl_scheduler_ = nullptr;
   omt::ObAiService * mods_ai_service_ = nullptr;
+  ObAiColumnWorker * mods_ai_column_worker_ = nullptr;
   share::ObChangeStreamMgr * mods_change_stream_mgr_ = nullptr;
   ObLSRuntimeAdapter ls_runtime_adapter_;
 }; // end of class ObServer

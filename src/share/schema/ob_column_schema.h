@@ -293,6 +293,13 @@ int assign(const ObColumnSchemaV2 &src_schema);
   inline bool is_domain_index_column() const { return is_vec_index_column() || is_fulltext_column() || is_multivalue_generated_column() || is_multivalue_generated_array_column(); }
   inline bool has_generated_column_deps() const { return column_flags_ & GENERATED_DEPS_CASCADE_FLAG; }
   inline bool is_invisible_column() const { return column_flags_ & INVISIBLE_COLUMN_FLAG; }
+  /* ai column, its definition (see share/ai_service/ob_ai_service_struct.h) is stored in
+   * the extended type info of the column */
+  inline bool is_ai_column() const { return column_flags_ & AI_COLUMN_FLAG; }
+  inline void set_ai_column() { add_column_flag(AI_COLUMN_FLAG); }
+  /* the hidden result spec column of an ai column, see AI_COLUMN_SPEC_FLAG */
+  inline bool is_ai_column_spec() const { return column_flags_ & AI_COLUMN_SPEC_FLAG; }
+  inline void set_ai_column_spec() { add_column_flag(AI_COLUMN_SPEC_FLAG); }
   inline bool has_column_flag(int64_t flag) const { return column_flags_ & flag; }
   inline int64_t get_column_flags() const { return column_flags_; }
   //these column flags must be stored in __all_column

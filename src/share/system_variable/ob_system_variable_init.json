@@ -10976,6 +10976,19 @@
     "background_cn": "",
     "ref_url": ""
   },
+  "ai_column_strict_read": {
+    "id": 10755,
+    "name": "ai_column_strict_read",
+    "default_value": "0",
+    "base_value": "0",
+    "data_type": "bool",
+    "info": "rejects statements that read an ai column whose generation tasks are not all finished",
+    "flags": "GLOBAL | SESSION | NEED_SERIALIZE",
+    "publish_version": "1.0.0.0",
+    "info_cn": "控制读取尚未生成完成的 AI 列时是否报错",
+    "background_cn": "",
+    "ref_url": ""
+  },
   "enable_file_sql": {
     "id": 10754,
     "name": "enable_file_sql",

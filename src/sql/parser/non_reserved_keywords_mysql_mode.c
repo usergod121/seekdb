@@ -697,6 +697,7 @@ static const NonReservedKeyword Mysql_none_reserved_keywords[] =
   {"row_number", ROW_NUMBER},
   {"rows", ROWS},
   {"rtree", RTREE},
+  {"retry", RETRY},
   {"run", RUN},
   {"sample", SAMPLE},
   {"savepoint", SAVEPOINT},
