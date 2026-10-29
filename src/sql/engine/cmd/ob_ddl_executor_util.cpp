@@ -50,6 +50,17 @@ int ObDDLExecutorUtil::handle_session_exception(ObSQLSessionInfo &session)
   return ret;
 }
 
+namespace
+{
+// The interval between two polls of a ddl task. Every poll is an inner sql query against the error
+// message table of that task, so the wait starts short and backs off: a build whose data is small
+// then finishes in a few milliseconds instead of paying a full fixed interval per poll.
+int64_t ddl_wait_poll_interval(const int64_t waited_us)
+{
+  return MIN(100 * 1000, MAX(2 * 1000, waited_us / 4));
+}
+} // namespace
+
 int ObDDLExecutorUtil::wait_ddl_finish(const int64_t task_id,
     const bool ddl_need_retry_at_executor,
     ObSQLSessionInfo *session,
@@ -58,7 +69,12 @@ int ObDDLExecutorUtil::wait_ddl_finish(const int64_t task_id,
     const bool is_support_cancel)
 {
   int ret = OB_SUCCESS;
-  const int64_t retry_interval = 100 * 1000;
+  // Polling the error message table of a ddl task is an inner sql query, and a statement like the
+  // build of a full text index waits for several tasks one after the other, so a fixed 100ms
+  // between two polls is the dominant cost of a build whose data is small. Poll quickly at first
+  // and back off: a task that finishes in a few milliseconds is then seen in a few milliseconds,
+  // while a long task still costs only a few queries per second.
+  int64_t waited_us = 0;
   ObAddr unused_addr;
   bool is_table_exist = false;
   int64_t unused_user_msg_len = 0;
@@ -116,7 +132,9 @@ int ObDDLExecutorUtil::wait_ddl_finish(const int64_t task_id,
           ret = OB_TIMEOUT;
           FORWARD_USER_ERROR(ret, "DDL execution status is undecided, please check later if it finishes successfully or not.");
         } else {
-          ob_usleep(retry_interval);
+          const int64_t poll_interval = ddl_wait_poll_interval(waited_us);
+          waited_us += poll_interval;
+          ob_usleep(poll_interval);
         }
       }
     }
@@ -172,7 +190,7 @@ int ObDDLExecutorUtil::wait_ddl_retry_task_finish(const int64_t task_id,
 {
   int ret = OB_SUCCESS;
   affected_rows = 0;
-  const int64_t retry_interval = 100 * 1000;
+  int64_t waited_us = 0;
   ObAddr unused_addr;
   bool is_table_exist = false;
   int64_t forward_user_msg_len = 0;
@@ -245,7 +263,9 @@ int ObDDLExecutorUtil::wait_ddl_retry_task_finish(const int64_t task_id,
           ret = OB_TIMEOUT;
           FORWARD_USER_ERROR(ret, "DDL execution status is undecided, please check later if it finishes successfully or not.");
         } else {
-          ob_usleep(retry_interval);
+          const int64_t poll_interval = ddl_wait_poll_interval(waited_us);
+          waited_us += poll_interval;
+          ob_usleep(poll_interval);
         }
       }
     }
