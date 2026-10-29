@@ -76,36 +76,44 @@ void ObStopWordChecker::destroy()
 int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
 {
   int ret = OB_SUCCESS;
-  
-  
-  common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
   if (OB_UNLIKELY(!inited_)) {
     ret = OB_NOT_INIT;
   } else if (OB_UNLIKELY(word.empty())) {
     ret = OB_INVALID_ARGUMENT;
+  } else if (word.get_collation_type() == stopword_type_.get_collation_type()) {
+    // The word is already in the collation of the stop word list, which is the case for every word
+    // of a document indexed with the default charset: look it up in place. Converting it would
+    // build a temporary arena allocator and copy the word for every word of every document.
+    ret = exist_in_set(word, is_stopword);
   } else {
+    common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
     common::ObString cmp_str;
-    // do nothing set out with in if type is the same.
     if (OB_FAIL(common::ObCharset::charset_convert(
-                                       allocator,
-                                       word.get_word().get_string(),
-                                       word.get_collation_type(),
-                                       stopword_type_.get_collation_type(),
-                                       cmp_str))) {
+                                     allocator,
+                                     word.get_word().get_string(),
+                                     word.get_collation_type(),
+                                     stopword_type_.get_collation_type(),
+                                     cmp_str))) {
     } else {
       ObFTWord converted(cmp_str.length(), cmp_str.ptr(), stopword_type_);
-      ret = stopword_set_.exist_refactored(converted);
-      if (OB_HASH_NOT_EXIST == ret) {
-        is_stopword = false;
-        ret = OB_SUCCESS;
-      } else if (OB_HASH_EXIST == ret) {
-        is_stopword = true;
-        ret = OB_SUCCESS;
-      } else if (OB_SUCC(ret)) {
-        ret = OB_ERR_UNEXPECTED;
-      } else {
-      }
+      ret = exist_in_set(converted, is_stopword);
     }
+  }
+  return ret;
+}
+
+int ObStopWordChecker::exist_in_set(const ObFTWord &word, bool &is_stopword)
+{
+  int ret = OB_SUCCESS;
+  is_stopword = false;
+  ret = stopword_set_.exist_refactored(word);
+  if (OB_HASH_NOT_EXIST == ret) {
+    ret = OB_SUCCESS;
+  } else if (OB_HASH_EXIST == ret) {
+    is_stopword = true;
+    ret = OB_SUCCESS;
+  } else if (OB_SUCC(ret)) {
+    ret = OB_ERR_UNEXPECTED;
   }
   return ret;
 }
@@ -258,14 +266,20 @@ int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
   } else if (!flag_.groupby_word()) {
     if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
-  } else if (OB_FAIL(word_map_.get_refactored(word, word_count)) && OB_HASH_NOT_EXIST != ret) {
   } else {
-    if (OB_HASH_NOT_EXIST == ret) {
-      word_count = 1;
+    // One insert attempt handles the common case of a word seen for the first time; only a word
+    // that is already in the map needs the read modify write pair. A first occurrence counts as
+    // one, exactly like the lookup path below did before.
+    int tmp_ret = word_map_.set_refactored(word, 1, 0/*overwrite*/);
+    if (OB_SUCCESS == tmp_ret) {
+      // inserted
+    } else if (OB_HASH_EXIST != tmp_ret) {
+      ret = tmp_ret;
+    } else if (OB_FAIL(word_map_.get_refactored(word, word_count))) {
     } else {
       word_count += word_freq;
-    }
-    if (OB_FAIL(word_map_.set_refactored(word, word_count, 1/*overwrite*/))) {
+      if (OB_FAIL(word_map_.set_refactored(word, word_count, 1/*overwrite*/))) {
+      }
     }
   }
   return ret;
