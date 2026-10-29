@@ -1,5 +1,31 @@
 # Astra FTS Performance Notes
 
+## T5: DaaT existence-only merge
+
+### Change
+
+- `src/observer/composition/retrieval/ob_das_legacy_tr_merge_iter.cpp`, `ObDASLegacyTRMergeIter::create_sparse_retrieval_iter`: enable existence-only collection only when the plan says relevance is boolean-only, the search is not BOOLEAN mode, and `minimum_should_match <= 1`.
+- `src/storage/retrieval/ob_i_sparse_retrieval_iter.h`, `ObSparseRetrievalMergeParam`: carry the eligibility bit to DaaT.
+- `src/storage/retrieval/ob_sparse_daat_iter.cpp`, `ObSRDaaTIterImpl::collect_dims_by_id`: continue popping all dimensions with the same document id, but skip per-dimension relevance collection and the per-document collector result when only match existence is observable. Emit a constant positive relevance so the existing `MATCH > 0` filter remains true. `OB_FTS_EXISTENCE_ONLY_DAAT` defaults to `1`; define it as `0` to restore the collector path.
+
+### Hot-path evidence and expected impact
+
+- The platform measurements imply `143.9 ns` (`query_cn`), `163 ns` (`query_beng`), and `169 ns` (`query_mixed`) per hit after subtracting the `0.0248 ms` `select1` floor, at `8001/11000/7332` hits.
+- These queries use `ObDASLegacyTRMergeIter` and `ObSRDaaTIterImpl`. For each unique candidate, `collect_dims_by_id` invokes `collect_one_dim` once per matching token posting and `get_result` once per candidate. The fast path removes those collector calls and the associated score accumulation while retaining same-id cursor advancement and one output per document.
+- Static estimate only: saving roughly `10-25 ns` per hit would project `query_cn` to `119-134 ns`, `query_beng` to `138-153 ns`, and `query_mixed` to `144-159 ns`. This does not establish the requested `120-135 ns` for all three; container measurements are needed to decide whether T5 has further headroom. No score gain is claimed from an unmeasured estimate.
+
+### Container verification required
+
+1. Run the four platform MATCH queries and confirm hit counts remain `8001/11000/7332/20`.
+2. Compare `query_cn`, `query_beng`, and `query_mixed` latency per hit before/after using `(avg_ms - 0.0248) * 1e6 / hits`; target is `120-135 ns` per hit, with repeated runs and noise reported.
+3. Run with `OB_FTS_EXISTENCE_ONLY_DAAT=0`; it must restore the old collector path and the same hit counts.
+4. Compare `SELECT id, MATCH(c) AGAINST('x') AS s FROM t WHERE MATCH(c) AGAINST('x') ORDER BY s DESC LIMIT 20`; explicit relevance projection/order must keep exact scoring and preserve result set and order.
+
+### Risks and rollback
+
+- The fast path depends on the plan's `bool_relevance_only` guarantee and `minimum_should_match <= 1`; it is explicitly disabled for BOOLEAN mode and higher minimum-match thresholds. A false-positive plan flag could otherwise change filter results.
+- Roll back by defining `OB_FTS_EXISTENCE_ONLY_DAAT=0` or reverting this T5 commit. No compile or runtime validation was performed on this workstation.
+
 ## query_limit early stop
 
 ### Change

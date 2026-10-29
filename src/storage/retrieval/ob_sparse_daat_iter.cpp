@@ -18,6 +18,10 @@
 
 #include "ob_sparse_daat_iter.h"
 
+#ifndef OB_FTS_EXISTENCE_ONLY_DAAT
+#define OB_FTS_EXISTENCE_ONLY_DAAT 1
+#endif
+
 namespace oceanbase
 {
 namespace storage
@@ -314,17 +318,22 @@ int ObSRDaaTIterImpl::collect_dims_by_id(const ObDatum *&id_datum, double &relev
 
   const ObSRMergeItem *top_item = nullptr;
   bool curr_doc_end = false;
+  bool skip_relevance_collection = false;
   int64_t iter_idx = 0;
   relevance = 0.0;
   got_valid_id = false;
+#if OB_FTS_EXISTENCE_ONLY_DAAT
+  skip_relevance_collection = iter_param_->bool_relevance_only_;
+#endif
 
   while (OB_SUCC(ret) && !merge_heap_->empty() && !curr_doc_end) {
     if (merge_heap_->is_unique_champion()) {
       curr_doc_end = true;
     }
     if (OB_FAIL(merge_heap_->top(top_item))) {
-    } else if (OB_FAIL(relevance_collector_->collect_one_dim(top_item->iter_idx_, top_item->relevance_))) {
     } else if (FALSE_IT(iter_idx = top_item->iter_idx_)) {
+    } else if (!skip_relevance_collection
+               && OB_FAIL(relevance_collector_->collect_one_dim(iter_idx, top_item->relevance_))) {
     } else if (OB_FAIL(merge_heap_->pop())) {
     } else {
       next_round_iter_idxes_[next_round_cnt_++] = iter_idx;
@@ -335,8 +344,15 @@ int ObSRDaaTIterImpl::collect_dims_by_id(const ObDatum *&id_datum, double &relev
     id_datum = iter_domain_ids_[iter_idx];
     if (OB_ISNULL(id_datum)) {
       ret = OB_ERR_UNEXPECTED;
-    } else if (OB_FAIL(relevance_collector_->get_result(relevance, got_valid_id))) {
-    } else if (got_valid_id && OB_FAIL(process_collected_row(*id_datum, relevance))) {
+    } else {
+      if (skip_relevance_collection) {
+        // Every candidate has at least one matching token; the score is unobservable here.
+        relevance = 1.0;
+        got_valid_id = true;
+      } else if (OB_FAIL(relevance_collector_->get_result(relevance, got_valid_id))) {
+      }
+      if (OB_SUCC(ret) && got_valid_id && OB_FAIL(process_collected_row(*id_datum, relevance))) {
+      }
     }
   }
 

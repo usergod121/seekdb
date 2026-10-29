@@ -110,6 +110,7 @@ struct ObSparseRetrievalMergeParam
       relevance_expr_(nullptr),
       relevance_proj_expr_(nullptr),
       filter_expr_(nullptr),
+      bool_relevance_only_(false),
       topk_limit_(0),
       field_boost_(1.0),
       max_batch_size_(1)
@@ -120,7 +121,7 @@ struct ObSparseRetrievalMergeParam
   bool need_pushdown_topk() const { return topk_limit_ > 0; }
   TO_STRING_KV(KPC_(dim_weights), KPC(limit_param_), KP_(eval_ctx),
       KP_(id_proj_expr), KP_(relevance_expr), KP_(relevance_proj_expr), KP_(filter_expr),
-      K_(topk_limit), K_(max_batch_size));
+      K_(bool_relevance_only), K_(topk_limit), K_(max_batch_size));
   const ObIArray<double> *dim_weights_; // score weight for each dimension
   const common::ObLimitParam *limit_param_;
   sql::ObEvalCtx *eval_ctx_;
@@ -128,6 +129,7 @@ struct ObSparseRetrievalMergeParam
   sql::ObExpr *relevance_expr_;
   sql::ObExpr *relevance_proj_expr_;
   sql::ObExpr *filter_expr_; // filter expr on score
+  bool bool_relevance_only_;
   int64_t topk_limit_;
   double field_boost_;
   int64_t max_batch_size_;
