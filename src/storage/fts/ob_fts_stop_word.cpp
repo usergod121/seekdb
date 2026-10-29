@@ -18,6 +18,8 @@
 #define USING_LOG_PREFIX STORAGE_FTS
 
 #include "share/rc/ob_server_runtime.h"
+#include "lib/charset/ob_ctype.h"
+#include "lib/charset/mb_wc.h"
 #include "storage/fts/ob_fts_stop_word.h"
 #include "storage/fts/ob_fts_parser_helper.h"
 #include "storage/fts/ob_fts_parser_property.h"
@@ -160,20 +162,47 @@ bool ObAddWord::is_min_max_word(const int64_t c_len) const
 
 namespace
 {
-// Lowercasing UTF-8 text only rewrites ASCII upper case letters and multibyte code
-// points, so a lower case word made of ASCII letters and digits can be used as it
-// is. Testing the bytes is far cheaper than copying the word into the allocator and
-// running the case table over it, and it keeps the hot path allocation free.
+// Whether lowercasing a word for this collation leaves every one of its characters alone.
+// ObCharset::tolower() first copies the word into the allocator and then runs the case table over
+// the copy in place, so a word the table maps to itself only needs the scan: for a chinese document
+// that is every word the dictionary produces, because CJK characters have no case at all. The scan
+// follows ob_casedn_utf8mb4() step by step - the same decoder, the same case pages, the same "this
+// character maps to itself" test - so the fast path and the conversion can never disagree; a byte
+// sequence the decoder rejects takes the slow path.
 bool is_casedown_noop(const common::ObString &word, const ObCollationType collation)
 {
   bool noop = true;
-  if (ObCharsetType::CHARSET_UTF8MB4 != common::ObCharset::charset_type_by_coll(collation)) {
+  const ObCharsetInfo *cs = common::ObCharset::get_charset(collation);
+  if (OB_ISNULL(cs) || OB_ISNULL(cs->caseinfo) || 1 != cs->casedn_multiply) {
+    noop = false;
+  } else if (ObCharsetType::CHARSET_UTF8MB4 != common::ObCharset::charset_type_by_coll(collation)) {
     noop = false;
   } else {
+    const ObUnicaseInfo *uni_plane = cs->caseinfo;
     const unsigned char *bytes = reinterpret_cast<const unsigned char *>(word.ptr());
-    for (int64_t i = 0; noop && i < word.length(); ++i) {
-      const unsigned char byte = bytes[i];
-      noop = byte < 0x80 && (byte < 'A' || byte > 'Z');
+    const unsigned char *end = bytes + word.length();
+    while (noop && bytes < end) {
+      const unsigned char byte = *bytes;
+      if (byte < 0x80) {
+        noop = (byte < 'A' || byte > 'Z');
+        ++bytes;
+      } else {
+        ob_wc_t wc = 0;
+        const int srcres = ob_mb_wc_utf8mb4_thunk(cs, &wc, bytes, end);
+        if (srcres <= 0) {
+          noop = false;
+        } else {
+          ob_wc_t lower = wc;
+          if (wc <= uni_plane->maxchar) {
+            const ObUnicaseInfoChar *page = uni_plane->page[(wc >> 8)];
+            if (OB_NOT_NULL(page)) {
+              lower = page[wc & 0xFF].tolower;
+            }
+          }
+          noop = (lower == wc);
+          bytes += srcres;
+        }
+      }
     }
   }
   return noop;

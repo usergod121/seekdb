@@ -705,8 +705,13 @@ private:
   int fetch_next_fts_index_rows();
   int fill_generated_fts_cols(blocksstable::ObDatumRow *row);
   int get_output_fts_col_expr_by_type(const ObExprOperatorType &type, ObExpr *&expr);
+  // The fill of a full text aux table drives the same expressions for every row of the data table
+  // and for every word of every row: resolve them once when the scan is opened instead of searching
+  // the output list by operator type again for each of those rows.
+  int init_fts_index_exprs();
   bool is_resume_point_saved();
 protected:
+
   DASOpResultIter scan_result_;
   ObTableScanRtDef tsc_rtdef_;
   bool need_final_limit_;
@@ -735,6 +740,13 @@ protected:
   bool in_rescan_;
   ObDomainIndexCache domain_index_;
   ObFTIndexRowCache fts_index_;
+  // Expressions of a full text aux fill, resolved in init_fts_index_exprs().
+  ObExpr *fts_ft_expr_;
+  ObExpr *fts_doc_id_expr_;
+  ObExpr *fts_word_col_exprs_[4];
+  // The text of a document has to be readable as one string while it is tokenized: the allocator
+  // keeps the out of row data of the current document and is emptied for the next one.
+  common::ObArenaAllocator fts_lob_allocator_;
 
   // output_ is used to output data, TSC operator directly invokes output_::get_next_row(s),
   // it points to fold_iter_ in group rescan and iter_tree_ in normal scan.
