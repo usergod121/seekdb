@@ -36,6 +36,44 @@ namespace oceanbase
 using namespace common;
 namespace sql
 {
+namespace
+{
+bool is_count_star_only_parent(const ObDMLStmt *stmt)
+{
+  bool is_count_star_only = false;
+  if (OB_NOT_NULL(stmt) && stmt->is_select_stmt()) {
+    const ObSelectStmt *select_stmt = static_cast<const ObSelectStmt *>(stmt);
+    const ObAggFunRawExpr *agg_expr = 1 == select_stmt->get_aggr_item_size()
+        ? select_stmt->get_aggr_item(0) : nullptr;
+    if (0 == select_stmt->get_group_expr_size()
+        && 0 == select_stmt->get_rollup_expr_size()
+        && 1 == select_stmt->get_aggr_item_size()
+        && 1 == select_stmt->get_select_item_size()
+        && select_stmt->get_condition_exprs().empty()
+        && 0 == select_stmt->get_having_expr_size()
+        && !select_stmt->has_order_by()
+        && !select_stmt->has_distinct()
+        && !select_stmt->is_fetch_with_ties()
+        && OB_NOT_NULL(agg_expr)
+        && T_FUN_COUNT == agg_expr->get_expr_type()
+        && 0 == agg_expr->get_real_param_count()
+        && !agg_expr->is_param_distinct()) {
+      is_count_star_only = true;
+    }
+  }
+  return is_count_star_only;
+}
+
+bool parent_row_order_is_unobservable(const ObIArray<ObParentDMLStmt> &parent_stmts)
+{
+  bool unobservable = true;
+  for (int64_t i = 0; unobservable && i < parent_stmts.count(); ++i) {
+    unobservable = is_count_star_only_parent(parent_stmts.at(i).stmt_);
+  }
+  return unobservable;
+}
+} // namespace
+
 int ObTransformPreProcess::transform_one_stmt(common::ObIArray<ObParentDMLStmt> &parent_stmts,
                                               ObDMLStmt *&stmt,
                                               bool &trans_happened)
@@ -183,7 +221,8 @@ int ObTransformPreProcess::transform_one_stmt(common::ObIArray<ObParentDMLStmt> 
     }
     if (OB_SUCC(ret)) {
       if (stmt->get_match_exprs().count() > 0 &&
-          OB_FAIL(preserve_order_for_fulltext_search(stmt, is_happened))) {
+          OB_FAIL(preserve_order_for_fulltext_search(
+              stmt, parent_row_order_is_unobservable(parent_stmts), is_happened))) {
       } else {
         trans_happened |= is_happened;
       }
@@ -3794,7 +3833,8 @@ int ObTransformPreProcess::do_flatten_conditions(ObDMLStmt *stmt, ObIArray<ObRaw
 
 // full-text index queries on a single base table are processed with order preservation. 
 // (Order is not preserved in multi-table join scenarios.)
-int ObTransformPreProcess::preserve_order_for_fulltext_search(ObDMLStmt *stmt, bool& trans_happened)
+int ObTransformPreProcess::preserve_order_for_fulltext_search(
+    ObDMLStmt *stmt, const bool parent_order_unobservable, bool& trans_happened)
 {
   int ret = OB_SUCCESS;
   trans_happened = false;
@@ -3945,7 +3985,8 @@ int ObTransformPreProcess::preserve_order_for_fulltext_search(ObDMLStmt *stmt, b
     if (OB_FAIL(stmt->add_order_item(item))) {
     } else {
 #if OB_FTS_APPROX_TOPK_EARLY_STOP
-      if (nullptr != stmt->get_limit_expr()
+      if (parent_order_unobservable
+          && nullptr != stmt->get_limit_expr()
           && T_FUN_MATCH_AGAINST == match_expr->get_expr_type()) {
         static_cast<ObMatchFunRawExpr *>(match_expr)->set_implicit_fts_order(true);
       }

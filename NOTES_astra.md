@@ -13,6 +13,7 @@
 - The platform measurements imply `143.9 ns` (`query_cn`), `163 ns` (`query_beng`), and `169 ns` (`query_mixed`) per hit after subtracting the `0.0248 ms` `select1` floor, at `8001/11000/7332` hits.
 - These queries use `ObDASLegacyTRMergeIter` and `ObSRDaaTIterImpl`. For each unique candidate, `collect_dims_by_id` invokes `collect_one_dim` once per matching token posting and `get_result` once per candidate. The fast path removes those collector calls and the associated score accumulation while retaining same-id cursor advancement and one output per document.
 - Static estimate only: saving roughly `10-25 ns` per hit would project `query_cn` to `119-134 ns`, `query_beng` to `138-153 ns`, and `query_mixed` to `144-159 ns`. This does not establish the requested `120-135 ns` for all three; container measurements are needed to decide whether T5 has further headroom. No score gain is claimed from an unmeasured estimate.
+- With the platform baselines and `f=8.48`, that saving range would add roughly `0.95-2.4` total score points if it holds across these three query metrics; this is a projection, not a result.
 
 ### Container verification required
 
@@ -30,9 +31,9 @@
 
 ### Change
 
-- `src/sql/rewrite/ob_transform_pre_process.cpp`, `ObTransformPreProcess::preserve_order_for_fulltext_search`: mark the hidden MATCH order injected for a statement with LIMIT.
+- `src/sql/rewrite/ob_transform_pre_process.cpp`, `ObTransformPreProcess::transform_one_stmt` / `preserve_order_for_fulltext_search`: mark the hidden MATCH order only when every parent is a pure, unfiltered, ungrouped `COUNT(*)` consumer (or the statement has no parent). A parent projection such as `SELECT id FROM (... LIMIT 20)` observes the produced rows and is not eligible.
 - `src/sql/resolver/expr/ob_raw_expr.h` and `.cpp`, `ObMatchFunRawExpr`: carry the marker through expression copies and reset it with expression state.
-- `src/sql/optimizer/ob_log_plan.cpp`, `match_score_is_observable`: treat only the marked hidden order as unobservable. A selected MATCH score, explicit MATCH ordering, or `FETCH ... WITH TIES` keeps exact relevance observable.
+- `src/sql/optimizer/ob_log_plan.cpp`, `match_score_is_observable`: treat only the marked hidden order as unobservable. A selected MATCH score, explicit `ORDER BY relevance`, or `FETCH ... WITH TIES` keeps exact relevance observable.
 - `src/observer/composition/retrieval/ob_das_legacy_tr_merge_iter.cpp` and `.h`, `ObDASLegacyTRMergeIter::inner_init` / `create_sparse_retrieval_iter`: route score-unobservable top-k from BMW/WAND to DaaT and give DaaT a `LIMIT + OFFSET` candidate cap. DaaT merges unique document IDs and its existing limit check stops advancing token cursors at that cap.
 - `OB_FTS_APPROX_TOPK_EARLY_STOP` defaults to `1`. Build with `-DOB_FTS_APPROX_TOPK_EARLY_STOP=0` to restore the old relevance-observable decision and BMW/WAND route.
 
@@ -48,12 +49,13 @@
 1. Build in the existing container with the default macro and run the platform `fts_large_bench` benchmark. Confirm hits remain `query_cn=8001`, `query_beng=11000`, `query_mixed=7332`, and `query_limit=20`; compare repeated `query_limit_avg_ms` runs against the `<=0.765 ms` target and calculate score with the platform formula.
 2. Run the query above with LIMIT 1 and LIMIT 20. LIMIT 20 must return count 20, and its latency should materially exceed neither LIMIT 1 nor a 20-candidate DaaT walk.
 3. Compare the result IDs and order for `SELECT id, MATCH(c) AGAINST('x') AS s FROM t WHERE MATCH(c) AGAINST('x') ORDER BY s DESC LIMIT 20` with the macro enabled and disabled. The set and relevance order must match; this query must remain on BMW/WAND.
-4. Repeat the benchmark with `OB_FTS_APPROX_TOPK_EARLY_STOP=0`. It should restore the prior query plan/behavior, including the prior `query_limit` latency range, while preserving all four hit counts.
+4. Run `SELECT id FROM (SELECT id FROM fts_large_bench.docs WHERE MATCH(content) AGAINST('倒排索引 tokenizer') LIMIT 20) t`. The inner retrieval must remain on BMW/WAND because the parent projects its rows; it must not use the approximate DaaT early stop.
+5. Repeat the benchmark with `OB_FTS_APPROX_TOPK_EARLY_STOP=0`. It should restore the prior query plan/behavior, including the prior `query_limit` latency range, while preserving all four hit counts.
 
 ### Risks and rollback
 
 - When relevance is not returned or explicitly ordered, LIMIT results may be a different subset because DaaT stops in document-ID merge order instead of ranking all matches. This is permitted only for the injected hidden order; explicit score consumers and `WITH TIES` retain BMW/WAND.
-- The score-observability check depends on the implicit-order marker surviving optimizer expression copies. Exercise the macro-on and macro-off paths in the container.
+- The score-observability check depends on the implicit-order marker surviving optimizer expression copies, and the row-order gate depends on the parent statement chain remaining available during preprocessing. Exercise the count-only wrapper and row-projecting parent cases in the container.
 - Roll back by building with `OB_FTS_APPROX_TOPK_EARLY_STOP=0`, or revert this single commit. No build or runtime validation has been performed on this workstation.
 
 ## Negative results and excluded directions
