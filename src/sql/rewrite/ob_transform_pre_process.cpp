@@ -24,6 +24,10 @@
 #include "sql/engine/expr/ob_expr_align_date4cmp.h"
 #include "query/vector/ob_vector_index_util.h"
 
+#ifndef OB_FTS_APPROX_TOPK_EARLY_STOP
+#define OB_FTS_APPROX_TOPK_EARLY_STOP 1
+#endif
+
 using namespace oceanbase::common;
 using namespace oceanbase::share;
 using namespace oceanbase::share::schema;
@@ -3940,6 +3944,12 @@ int ObTransformPreProcess::preserve_order_for_fulltext_search(ObDMLStmt *stmt, b
     OrderItem item(match_expr, default_desc_direction());
     if (OB_FAIL(stmt->add_order_item(item))) {
     } else {
+#if OB_FTS_APPROX_TOPK_EARLY_STOP
+      if (nullptr != stmt->get_limit_expr()
+          && T_FUN_MATCH_AGAINST == match_expr->get_expr_type()) {
+        static_cast<ObMatchFunRawExpr *>(match_expr)->set_implicit_fts_order(true);
+      }
+#endif
       trans_happened = true;
     }
   } 

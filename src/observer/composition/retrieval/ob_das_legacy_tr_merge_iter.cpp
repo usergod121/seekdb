@@ -21,6 +21,10 @@
 #include "sql/das/iter/sparse_retrieval/ob_das_text_retrieval_engine.h"
 #include "sql/das/ob_das_ir_define.h"
 
+#ifndef OB_FTS_APPROX_TOPK_EARLY_STOP
+#define OB_FTS_APPROX_TOPK_EARLY_STOP 1
+#endif
+
 namespace oceanbase
 {
 using namespace share;
@@ -49,12 +53,14 @@ ObDASLegacyTRMergeIter::ObDASLegacyTRMergeIter()
     block_max_iter_param_(),
     doc_length_est_param_(),
     doc_length_est_stat_cols_(),
+    approximate_topk_limit_param_(),
     topk_limit_(0),
     total_doc_cnt_tablet_id_(),
     inv_idx_tablet_id_(),
     flags_(0),
     check_rangekey_inited_(false),
     inv_idx_tablet_switched_(false),
+    approximate_topk_mode_(false),
     is_inited_(false)
 {
 }
@@ -87,12 +93,24 @@ int ObDASLegacyTRMergeIter::inner_init(ObDASIterParam &param)
     if (OB_FAIL(ret)) {
     } else if (OB_ISNULL(ir_ctdef_) || OB_ISNULL(ir_rtdef_)) {
       ret = OB_ERR_UNEXPECTED;
-    } else if (topk_mode_ && OB_FAIL(init_topk_limit())) {
-    } else if (OB_ISNULL(mem_context_)) {
-      lib::ContextParam mem_param;
-      mem_param.set_mem_attr("TextMergeIter", ObCtxIds::DEFAULT_CTX_ID);
-      if (OB_FAIL(CURRENT_CONTEXT->CREATE_CONTEXT(mem_context_, mem_param))) {
+    } else {
+      if (topk_mode_ && OB_FAIL(init_topk_limit())) {
+      } else if (OB_ISNULL(mem_context_)) {
+        lib::ContextParam mem_param;
+        mem_param.set_mem_attr("TextMergeIter", ObCtxIds::DEFAULT_CTX_ID);
+        if (OB_FAIL(CURRENT_CONTEXT->CREATE_CONTEXT(mem_context_, mem_param))) {
+        }
       }
+#if OB_FTS_APPROX_TOPK_EARLY_STOP
+      if (OB_SUCC(ret) && topk_mode_ && ir_ctdef_->bool_relevance_only()) {
+        // The injected order is not observable; DaaT can stop at LIMIT without ranking all matches.
+        topk_mode_ = false;
+        daat_mode_ = true;
+        approximate_topk_mode_ = true;
+        approximate_topk_limit_param_.offset_ = 0;
+        approximate_topk_limit_param_.limit_ = topk_limit_;
+      }
+#endif
     }
     sr_iter_param_.max_batch_size_ = merge_param.max_batch_size_; // may be greater than ir_rtdef_->eval_ctx_->max_batch_size_
     inv_idx_tablet_switched_ = false;
@@ -376,7 +394,9 @@ int ObDASLegacyTRMergeIter::create_sparse_retrieval_iter()
 {
   int ret = OB_SUCCESS;
   sr_iter_param_.dim_weights_ = dim_weights_.count() >= 1 ? &dim_weights_ : nullptr;
-  sr_iter_param_.limit_param_ = &ir_rtdef_->get_inv_idx_scan_rtdef()->limit_param_;
+  sr_iter_param_.limit_param_ = approximate_topk_mode_
+      ? &approximate_topk_limit_param_
+      : &ir_rtdef_->get_inv_idx_scan_rtdef()->limit_param_;
   sr_iter_param_.eval_ctx_ = ir_rtdef_->eval_ctx_;
   sr_iter_param_.id_proj_expr_ = ir_ctdef_->inv_scan_domain_id_col_;
   sr_iter_param_.relevance_expr_ = ir_ctdef_->relevance_expr_;
@@ -857,8 +877,11 @@ int ObDASLegacyTRMergeIter::inner_release()
   ir_rtdef_ = nullptr;
   tx_desc_ = nullptr;
   snapshot_ = nullptr;
+  approximate_topk_limit_param_.offset_ = 0;
+  approximate_topk_limit_param_.limit_ = -1;
   topk_limit_ = 0;
   inv_idx_tablet_switched_ = false;
+  approximate_topk_mode_ = false;
   is_inited_ = false;
   return ret;
 }

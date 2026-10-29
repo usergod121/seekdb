@@ -4872,7 +4872,8 @@ public:
       match_columns_(),
       search_key_(NULL),
       columns_boosts_(),
-      param_text_expr_(NULL)
+      param_text_expr_(NULL),
+      implicit_fts_order_(false)
   {
     set_expr_class(EXPR_MATCH_AGAINST);
   }
@@ -4883,7 +4884,8 @@ public:
       match_columns_(),
       search_key_(NULL),
       columns_boosts_(),
-      param_text_expr_(NULL)
+      param_text_expr_(NULL),
+      implicit_fts_order_(false)
   {
     set_expr_class(EXPR_MATCH_AGAINST);
   }
@@ -4929,12 +4931,15 @@ public:
   int replace_param_expr(int64_t index, ObRawExpr *expr);
 
   bool is_es_match() const { return get_expr_type() == T_FUN_ES_MATCH; }
+  void set_implicit_fts_order(const bool value) { implicit_fts_order_ = value; }
+  bool is_implicit_fts_order() const { return implicit_fts_order_; }
   VIRTUAL_TO_STRING_KVP(
       N_ITEM_TYPE, type_,
       N_RESULT_TYPE, result_type_,
       N_EXPR_INFO, info_,
       N_REL_ID, rel_ids_,
       K_(mode_flag),
+      K_(implicit_fts_order),
       K_(match_columns),
       KPC_(search_key),
       KPC_(param_text_expr));
@@ -4948,6 +4953,7 @@ private:
 
   ObSEArray<ObRawExpr*, COMMON_MULTI_NUM, ModulePageAllocator, true> columns_boosts_; // boost values for each column
   ObRawExpr *param_text_expr_; // param text expr for should_match_expr_
+  bool implicit_fts_order_; // optimizer-only marker for the order injected by FTS preprocessing
 };
 
 /// visitor interface

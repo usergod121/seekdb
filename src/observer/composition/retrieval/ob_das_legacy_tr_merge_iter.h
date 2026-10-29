@@ -24,6 +24,7 @@
 #include "storage/retrieval/ob_text_daat_iter.h"
 #include "storage/retrieval/ob_text_taat_iter.h"
 #include "storage/retrieval/ob_sparse_lookup_iter.h"
+#include "data_plane/api/data_plane/access/ob_tablet_scan.h"
 
 namespace oceanbase
 {
@@ -133,6 +134,7 @@ private:
   ObBlockMaxScoreIterParam block_max_iter_param_;
   ObBlockStatScanParam doc_length_est_param_;
   ObFixedArray<ObSkipIndexColMeta, ObIAllocator> doc_length_est_stat_cols_;
+  common::ObLimitParam approximate_topk_limit_param_;
   int64_t topk_limit_;
   ObTabletID total_doc_cnt_tablet_id_;
   ObTabletID inv_idx_tablet_id_;
@@ -148,6 +150,7 @@ private:
   };
   bool check_rangekey_inited_;
   bool inv_idx_tablet_switched_;
+  bool approximate_topk_mode_;
   bool is_inited_;
   DISALLOW_COPY_AND_ASSIGN(ObDASLegacyTRMergeIter);
 };

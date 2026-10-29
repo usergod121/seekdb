@@ -12015,7 +12015,7 @@ int match_score_is_observable(const ObDMLStmt *stmt, bool &observable)
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null stmt", K(ret));
   } else {
-    bool found = false;
+    bool found = stmt->is_fetch_with_ties();
     const ObIArray<OrderItem> &order_items = stmt->get_order_items();
     for (int64_t i = 0; OB_SUCC(ret) && !found && i < order_items.count(); ++i) {
       const ObRawExpr *expr = order_items.at(i).expr_;
@@ -12023,7 +12023,9 @@ int match_score_is_observable(const ObDMLStmt *stmt, bool &observable)
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("unexpected null order by expr", K(ret));
       } else if (expr->has_flag(CNT_MATCH_EXPR)) {
-        found = true;
+        const bool is_implicit_fts_order = T_FUN_MATCH_AGAINST == expr->get_expr_type()
+            && static_cast<const ObMatchFunRawExpr *>(expr)->is_implicit_fts_order();
+        found = !is_implicit_fts_order;
       }
     }
     if (OB_SUCC(ret) && !found && stmt->is_select_stmt()) {

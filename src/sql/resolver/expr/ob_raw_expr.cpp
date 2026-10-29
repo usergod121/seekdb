@@ -6114,6 +6114,7 @@ int ObMatchFunRawExpr::assign(const ObRawExpr &other)
       } else {
         mode_flag_ = tmp.mode_flag_;
         search_key_ = tmp.search_key_;
+        implicit_fts_order_ = tmp.implicit_fts_order_;
       }
       if (OB_SUCC(ret) && is_es_match()) {
         if (OB_FAIL(columns_boosts_.assign(tmp.columns_boosts_))) {
@@ -6311,6 +6312,7 @@ void ObMatchFunRawExpr::clear_child()
   match_columns_.reset();
   search_key_ = NULL;
   mode_flag_ = NATURAL_LANGUAGE_MODE;
+  implicit_fts_order_ = false;
   if (is_es_match()) {
     columns_boosts_.reset();
     param_text_expr_ = NULL;
