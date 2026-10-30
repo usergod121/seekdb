@@ -132,3 +132,13 @@ Status: implemented and statically reviewed; no compilation/performance claim ye
 - Verify old/new outputs for 24 varied strings plus repeated terms and output_mode ALL frequencies, 4 MATCH hits8001/11000/7332/20, LIMIT1, explicit relevance ordering, official tokenize_function/simple_query. Use short five-run CPU comparisons; only retain measured gains.
 - Risk: set_or_update and set_refactored share internal_set for a missing word and use the same equality; confirm byte-identical JSON order. Allocation failures remain errors. Existing first-frequency semantics are intentionally not corrected here.
 - Formal baseline update: candidate51624e61c scored38.727/50, record47232218. Official query0.9808/1.4928/1.1374/0.2900ms, hits8001/11000/7332/20; build3.151/2.325/1.422s, tokenize0.0599/0.0423ms. Build gain from004/005 is not established; next work targets shared parser/DDL costs.
+
+## 011: borrow basic-English tokens already owned by the document
+
+- File/function: src/storage/fts/ob_beng_ft_parser.cpp, ObBEngFTParser::get_next_token.
+- ObBasicEnglishNormalizer already returns a source-document slice for unchanged lowercase ASCII. ObBEngFTParser copied every such token into the segment arena. Borrow only spans wholly inside doc_; keep original allocating-copy path for normalized temporary buffers and every other token.
+- Lifetime proof: doc_ is the full input passed to segment and remains alive until the caller finishes its word map, as required by existing IK/whitespace document views. Normalizer arena is reused each token, therefore a generic return token.ptr_ without ownership test would be wrong and is deliberately not used.
+- Quantification: remove one arena allocation and one memcpy for each document-backed token; no tokenization, normalizing, stopword or grouping operation is skipped. Benefit depends on token count and is unmeasured.
+- Rollback OB_FTS_BENG_BORROW_DOCUMENT_TOKENS=0 restores the old owning-copy behavior. Default1. No new state, caches or invalidation.
+- Verify TOKENIZE default and ALL for lowercase, uppercase, mixed, repeated words, punctuation, digits, nonASCII; byte-identical output and frequencies. Official tokenize_function/simple_query and four MATCH counts must pass. Short five-run CPU comparison and raw official metrics decide retention.
+- Risk: arithmetic compares integer addresses to avoid unrelated-pointer relational comparisons and checks length by subtraction to avoid end-pointer overflow. Non-document tokens always copy before the next normalizer reuse.

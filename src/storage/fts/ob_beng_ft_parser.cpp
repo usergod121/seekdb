@@ -19,6 +19,12 @@
 #include "storage/fts/ob_beng_ft_parser.h"
 #include "data_plane/fts/ob_fts_struct.h"
 
+#include <cstdint>
+
+#ifndef OB_FTS_BENG_BORROW_DOCUMENT_TOKENS
+#define OB_FTS_BENG_BORROW_DOCUMENT_TOKENS 1
+#endif
+
 using namespace oceanbase::common;
 
 namespace oceanbase
@@ -49,15 +55,31 @@ int ObBEngFTParser::get_next_token(
     }
   } else if (OB_ISNULL(token.ptr_) || OB_UNLIKELY(0 >= token.len_ || 0 >= token_freq)) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_ISNULL(buf = static_cast<char *>(allocator_.alloc(token.len_)))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
   } else {
-    MEMCPY(buf, token.ptr_, token.len_);
-    word = buf;
-    word_len = token.len_;
-    char_len = token.len_;
-    word_freq = token_freq;
-    LOG_DEBUG("succeed to add word", K(ObString(word_len, word)), K(word_freq));
+#if OB_FTS_BENG_BORROW_DOCUMENT_TOKENS
+    // The input document outlives the complete parser segment and word map.
+    // The normalizer already returns a document view for unchanged tokens.
+    // Its temporary arena is reused on the next token, so all other views
+    // must still take the original owning-copy path below.
+    const std::uintptr_t doc_begin = reinterpret_cast<std::uintptr_t>(doc_.ptr_);
+    const std::uintptr_t token_begin = reinterpret_cast<std::uintptr_t>(token.ptr_);
+    if (token_begin >= doc_begin && token_begin - doc_begin <= doc_.len_
+        && token.len_ <= doc_.len_ - (token_begin - doc_begin)) {
+      word = token.ptr_;
+    } else
+#endif
+    if (OB_ISNULL(buf = static_cast<char *>(allocator_.alloc(token.len_)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+    } else {
+      MEMCPY(buf, token.ptr_, token.len_);
+      word = buf;
+    }
+    if (OB_SUCC(ret)) {
+      word_len = token.len_;
+      char_len = token.len_;
+      word_freq = token_freq;
+      LOG_DEBUG("succeed to add word", K(ObString(word_len, word)), K(word_freq));
+    }
   }
   return ret;
 }
