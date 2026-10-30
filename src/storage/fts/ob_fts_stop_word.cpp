@@ -56,13 +56,24 @@ int ObStopWordChecker::init()
 
     stopword_type_.set_meta(stop_meta);
     const int64_t stopword_count = sizeof(ob_stop_word_list) / sizeof(ob_stop_word_list[0]);
+    // Every word of the built in list is pure ASCII, so a word that carries any byte above 0x7f (a
+    // chinese word, for example) cannot be a stop word and does not have to be looked up at all.
+    bool ascii_only = true;
     for (int64_t i = 0; OB_SUCC(ret) && i < stopword_count; ++i) {
       ObFTWord stopword(STRLEN(ob_stop_word_list[i]), ob_stop_word_list[i], stopword_type_);
       if (OB_FAIL(stopword_set_.set_refactored(stopword))) {
+      } else {
+        for (const char *c = ob_stop_word_list[i]; '\0' != *c; ++c) {
+          if (static_cast<unsigned char>(*c) > 0x7f) {
+            ascii_only = false;
+            break;
+          }
+        }
       }
     }
 
     if (OB_SUCC(ret)) {
+      ascii_only_stopwords_ = ascii_only;
       inited_ = true;
     }
   }
@@ -88,7 +99,22 @@ int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
     // The word is already in the collation of the stop word list, which is the case for every word
     // of a document indexed with the default charset: look it up in place. Converting it would
     // build a temporary arena allocator and copy the word for every word of every document.
-    ret = exist_in_set(word, is_stopword);
+    if (ascii_only_stopwords_) {
+      // No stop word has a byte above 0x7f, so a word that has one cannot match: the walk over the
+      // word is cheaper than the hash lookup and saves it for every chinese word of a document.
+      bool has_non_ascii = false;
+      const ObString word_str = word.get_word().get_string();
+      for (int64_t i = 0; !has_non_ascii && i < word_str.length(); ++i) {
+        has_non_ascii = static_cast<unsigned char>(word_str.ptr()[i]) > 0x7f;
+      }
+      if (has_non_ascii) {
+        is_stopword = false;
+      } else {
+        ret = exist_in_set(word, is_stopword);
+      }
+    } else {
+      ret = exist_in_set(word, is_stopword);
+    }
   } else {
     common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
     common::ObString cmp_str;
