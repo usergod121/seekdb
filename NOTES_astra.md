@@ -237,3 +237,14 @@ ANN-benchmarks downloads were blocked by the outbound proxy; no bypass or local
 dependency install was attempted. The second large distribution is explicitly
 synthetic clustered data, not SIFT renamed. Default IVFPQ/iterative failures and
 small scratch-only benefit remain negative conclusions, not hidden successes.
+
+
+## Backup n8/floor4096: prepared, not committed or submitted
+
+Files/functions: tools/hipvs_bridge/seekdb_cuvs_bridge.c defaults used by seekdb_cuvs_build/search; header rollback documentation. GPU graph construction is measured as the dominant build component; earlier per-row add expansion was only19 growths and ~0.24-0.32s, and scratch-only reuse had ~1% effect. Fixed official AUTO search kernel, FP32, graph128, width4, SQL and input remain unchanged.
+
+Default niter8/intermediate128/itopk4096 balances measured graph cost and query quality. Real-default compile and macro0 compile passed on existing ROCm7.2.4 cloud. Fresh 250k-row/4096-SQL uniform: build11.64s, QPS208.86/203.80, Recall .9990/.9975; cluster: build9.57s, QPS219.93/211.40, Recall1/1; all IDs complete/legal/unique. No niter/floor/AUTO/reuse env overrides were used. Synthetic weighted B=4.795739 Q=1.53955; conditional formula20, not a formal score. Hidden/SIFT same-round recall delta<=0.005 and peak-resource gates remain unverified; failure can still score0.
+
+Validation recipe: build via unchanged tools/hipvs_bridge/build.sh; macro0 build with -DOB_CUVS_HIGH_RECALL_BUDGET=0; confirm preprocessor8/4096 vs16/2048. Fresh CREATE VECTOR INDEX lib=cuvs then4096 Top10/Top100 SQL queries on both distributions; verify row count, ID range/uniqueness, actual FP32 distances, sorting and recall. Reuse prior persistence/concurrency/fault/CPU VSAG checks since those code paths are unchanged. The full compiler and SQL log is backup_n8_default_validation.log; test-only sources are isolated.
+
+Rollback: OB_CUVS_HIGH_RECALL_BUDGET=0 restores cb39 n16/I128/floor2048 exactly; OB_CUVS_BALANCED_BUILD=0 still restores n60/I256/floor512. Runtime SEEKDB_CUVS_NN_DESCENT_ITER=16 and SEEKDB_CUVS_ITOPK_FLOOR=2048 restore budgets; changing build settings requires fresh index. Negative result: earlier backup SQL runs failed to start due OB_LOG_OUTOF_DISK_SPACE and are not completed performance results. Only the owned archived synthetic v4_default_uniform store was removed. Do not overwrite pending47232144 based on proxies alone.
