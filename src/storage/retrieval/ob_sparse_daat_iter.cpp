@@ -22,6 +22,10 @@
 #define OB_FTS_EXISTENCE_ONLY_DAAT 1
 #endif
 
+#ifndef OB_FTS_DAAT_IMPLICIT_BOOL_SCORE
+#define OB_FTS_DAAT_IMPLICIT_BOOL_SCORE 1
+#endif
+
 namespace oceanbase
 {
 namespace storage
@@ -281,6 +285,16 @@ int ObSRDaaTIterImpl::fill_merge_heap()
 {
   int ret = OB_SUCCESS;
   ObSRMergeItem item;
+  bool skip_relevance_fetch = false;
+#if OB_FTS_DAAT_IMPLICIT_BOOL_SCORE && OB_FTS_EXISTENCE_ONLY_DAAT
+  skip_relevance_fetch = iter_param_->bool_relevance_only_
+      && !iter_param_->need_pushdown_topk();
+#endif
+  if (skip_relevance_fetch) {
+    // collect_dims_by_id() retains ID merging/deduplication and returns existence.
+    // The heap comparator only reads IDs, so no per-posting score is needed.
+    item.relevance_ = 1.0;
+  }
   for (int64_t i = 0; OB_SUCC(ret) && i < next_round_cnt_; ++i) {
     const int64_t iter_idx = next_round_iter_idxes_[i];
     ObISRDaaTDimIter *dim_iter = nullptr;
@@ -292,8 +306,8 @@ int ObSRDaaTIterImpl::fill_merge_heap()
       } else {
         ret = OB_SUCCESS;
       }
-    } else if (OB_FAIL(dim_iter->get_curr_score(item.relevance_))) {
-    } else if (OB_NOT_NULL(iter_param_->dim_weights_) && FALSE_IT(item.relevance_ = item.relevance_ * iter_param_->field_boost_ * iter_param_->dim_weights_->at(iter_idx))) {
+    } else if (!skip_relevance_fetch && OB_FAIL(dim_iter->get_curr_score(item.relevance_))) {
+    } else if (!skip_relevance_fetch && OB_NOT_NULL(iter_param_->dim_weights_) && FALSE_IT(item.relevance_ = item.relevance_ * iter_param_->field_boost_ * iter_param_->dim_weights_->at(iter_idx))) {
     } else if (OB_FAIL(dim_iter->get_curr_id(iter_domain_ids_[iter_idx]))) {
     } else if (FALSE_IT(item.iter_idx_ = iter_idx)) {
     } else if (OB_FAIL(merge_heap_->push(item))) {

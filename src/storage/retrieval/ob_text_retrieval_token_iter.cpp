@@ -21,6 +21,10 @@
 #include "share/rc/ob_server_runtime.h"
 #include "query/engine/expr/ob_expr_bm25.h"
 
+#ifndef OB_FTS_DAAT_IMPLICIT_BOOL_SCORE
+#define OB_FTS_DAAT_IMPLICIT_BOOL_SCORE 1
+#endif
+
 namespace oceanbase
 {
 namespace storage
@@ -506,6 +510,11 @@ int ObTextRetrievalDaaTTokenIter::save_relevances_and_docids()
   if (OB_ISNULL(relevance_expr_) || OB_ISNULL(inv_scan_domain_id_col_)) {
     ret = OB_INVALID_ARGUMENT;
   } else if (token_iter_->bool_relevance_only()) {
+#if OB_FTS_DAAT_IMPLICIT_BOOL_SCORE
+    // Keep the same doc-id cache and cursor lifetime, but leave the constant
+    // existence score implicit instead of storing 1.0 for every posting.
+    ret = save_docids();
+#else
     // The score is only compared against zero by the pushed down match filter, so a constant
     // non zero relevance is equivalent and saves the BM25 evaluation of every posting.
     cur_idx_ = 0;
@@ -517,6 +526,7 @@ int ObTextRetrievalDaaTTokenIter::save_relevances_and_docids()
         }
       }
     }
+#endif
   } else if (OB_FAIL(relevance_expr_->eval_batch(*eval_ctx_, *token_iter_->get_skip(), count_))) {
   } else {
     cur_idx_ = 0;
@@ -599,7 +609,11 @@ int ObTextRetrievalDaaTTokenIter::get_curr_score(double &score) const
   if (OB_UNLIKELY(cur_idx_ >= count_)) {
     ret = OB_ARRAY_OUT_OF_RANGE;
   } else if (relevance_expr_) {
+#if OB_FTS_DAAT_IMPLICIT_BOOL_SCORE
+    score = token_iter_->bool_relevance_only() ? 1.0 : relevance_[cur_idx_];
+#else
     score = relevance_[cur_idx_];
+#endif
   }
   return ret;
 }

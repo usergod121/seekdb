@@ -1,5 +1,15 @@
 # Astra FTS Performance Notes
 
+## 2026-10-30 / DELIVER_007 candidate: implicit boolean scores
+
+- Files/functions: `ob_sparse_daat_iter.cpp::fill_merge_heap`; `ob_text_retrieval_token_iter.cpp::save_relevances_and_docids/get_curr_score`. Reuse the existing doc-id cache and represent the existing boolean-only relevance constant implicitly. Do not disable `need_calc_relevance`, remove token cursors, or bypass same-ID merging/deduplication.
+- The merge-side omission requires both the existing existence-only gate and `!need_pushdown_topk()`. BMW/WAND initialization also calls the base heap-fill function, so top-k is deliberately excluded. Explicit score/order and all existing top-k paths keep their score-fetch behavior. The heap comparator reads doc IDs only.
+- For P posting advances, eligible paths avoid P virtual score fetches, P writes of constant 1.0, and any ignored score-weight multiplication. P is not the number of unique output hits. Bounds checking still occurs through `get_curr_id`; doc-id conversion, skip mask and cursor lifetime are unchanged. `relevance_` allocation and ABI remain unchanged.
+- Rollback: compile both changed translation units with `OB_FTS_DAAT_IMPLICIT_BOOL_SCORE=0`; the old score-cache loop and fetch behavior are retained. `OB_FTS_EXISTENCE_ONLY_DAAT=0` independently disables the merge-side omission.
+- Quantification: previous platform data imply roughly 145-172 ns per unique hit; the overall query target remains 115-135 ns/hit. No honest static estimate shows that this small candidate reaches that target. Measure paired CPU us/call and `(query_ms-select1_ms)*1e6/hits`; reject if it adds branches without repeatable net benefit. No score increase is booked.
+- Required runtime checks: official benchmark counts 8001/11000/7332/20; macro on/off identical results; explicit MATCH projection and relevance DESC LIMIT 20 identical IDs, scores and order; parent row projection retains exact WAND; BOOLEAN mode, weights, minimum_should_match, LIMIT/OFFSET and repeated scans. No compilation or runtime result exists for 007 at this checkpoint.
+- Updated execution authorization: the user now asks Astra to compile and test directly and then submit after validation. Use isolated source/build/data and port 2971; never change the other running service. The Docker VHD is on F with only about 5.7GiB actual free despite an 825GiB virtual df result, so own build/data are directed to E. No dependency installation.
+
 ## T5: DaaT existence-only merge
 
 ### Change
