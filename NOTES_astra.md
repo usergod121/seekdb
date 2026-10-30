@@ -121,3 +121,14 @@ Status: implemented and statically reviewed; no compilation/performance claim ye
 - Verify official counts 8001/11000/7332/20; LIMIT 1=1; explicit MATCH score DESC LIMIT 20 IDs, ordering and scores unchanged; projected-parent IDs/order unchanged; official tokenize_function/simple_query PASS; >=20 TOKENIZE strings byte-identical; macro-off output identical. Benchmark >=5 paired CPU-time runs and official raw metrics, no local 100/100 score claim.
 - Risks checked statically: initial/reused rounds advance every token before inspecting head pointers; exhausted cursors become null; tied minimum IDs advance together; untaken cursors retain their original datum ownership. Empty token lists, errors, batches, filters and projection retain existing lifecycle. No tokenizer/ranked-result semantics changed.
 - Negative conclusion: no measured ns saving or platform gain exists yet. Environmental build/startup repairs do not count as optimization.
+
+## 010: one hash lookup for grouped token frequency
+
+- File/function: src/storage/fts/ob_fts_stop_word.cpp, ObAddWord::groupby_word.
+- Existing repeated-token path hashes the same collation-aware word for failed insert, read, and overwrite. Use existing ObHashMap::set_or_update to insert or update the frequency in one bucket traversal; its callback receives the value reference, not the key/value pair.
+- Preserve the current first-occurrence value1 even when word_freq>1, increment existing entries by word_freq, preserve nongrouped insertion, token bytes, collation hash/equality, and insertion order.
+- Quantification: for U distinct words and D repeated occurrences, hash calls fall from U+3D to U+D. Total saving depends on observed D and hash cost; no measured ns or score gain is claimed before A/B.
+- Rollback OB_FTS_SINGLE_LOOKUP_WORD_FREQUENCY=0 compiles the exact old grouped path. Default1.
+- Verify old/new outputs for 24 varied strings plus repeated terms and output_mode ALL frequencies, 4 MATCH hits8001/11000/7332/20, LIMIT1, explicit relevance ordering, official tokenize_function/simple_query. Use short five-run CPU comparisons; only retain measured gains.
+- Risk: set_or_update and set_refactored share internal_set for a missing word and use the same equality; confirm byte-identical JSON order. Allocation failures remain errors. Existing first-frequency semantics are intentionally not corrected here.
+- Formal baseline update: candidate51624e61c scored38.727/50, record47232218. Official query0.9808/1.4928/1.1374/0.2900ms, hits8001/11000/7332/20; build3.151/2.325/1.422s, tokenize0.0599/0.0423ms. Build gain from004/005 is not established; next work targets shared parser/DDL costs.

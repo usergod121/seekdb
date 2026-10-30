@@ -24,6 +24,10 @@
 #include "storage/fts/ob_fts_parser_helper.h"
 #include "storage/fts/ob_fts_parser_property.h"
 
+#ifndef OB_FTS_SINGLE_LOOKUP_WORD_FREQUENCY
+#define OB_FTS_SINGLE_LOOKUP_WORD_FREQUENCY 1
+#endif
+
 namespace oceanbase
 {
 namespace storage
@@ -260,13 +264,23 @@ int ObAddWord::check_stopword(const ObFTWord &ft_word, bool &is_stopword)
 int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
 {
   int ret = OB_SUCCESS;
-  int64_t word_count = 0;
   if (OB_UNLIKELY(word.empty() || word_freq <= 0)) {
     ret = OB_INVALID_ARGUMENT;
   } else if (!flag_.groupby_word()) {
     if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
   } else {
+#if OB_FTS_SINGLE_LOOKUP_WORD_FREQUENCY
+    // Preserve the existing first-occurrence value of one, including for an
+    // iterator that supplies a frequency greater than one. Only an existing
+    // entry receives word_freq. set_or_update hashes and finds that entry once.
+    auto add_frequency = [word_freq](int64_t &count) {
+      count += word_freq;
+    };
+    if (OB_FAIL(word_map_.set_or_update(word, 1, add_frequency))) {
+    }
+#else
+    int64_t word_count = 0;
     // One insert attempt handles the common case of a word seen for the first time; only a word
     // that is already in the map needs the read modify write pair. A first occurrence counts as
     // one, exactly like the lookup path below did before.
@@ -281,6 +295,7 @@ int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
       if (OB_FAIL(word_map_.set_refactored(word, word_count, 1/*overwrite*/))) {
       }
     }
+#endif
   }
   return ret;
 }
