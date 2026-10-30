@@ -25,6 +25,10 @@
 #include "storage/fts/ik/ob_ik_char_util.h"
 #include "storage/fts/ik/ob_ik_token.h"
 
+#ifndef OB_FTS_IK_TRANSITION_CACHE
+#define OB_FTS_IK_TRANSITION_CACHE 1
+#endif
+
 namespace oceanbase
 {
 namespace storage
@@ -74,6 +78,66 @@ inline int64_t single_char_slot(const uint32_t key)
 {
   return static_cast<int64_t>((key * 2654435761U) >> 15) & SINGLE_CHAR_CACHE_MASK;
 }
+
+#if OB_FTS_IK_TRANSITION_CACHE
+struct CJKTransition
+{
+  const ObIFTDict *root_ = nullptr;
+  const ObIFTDict *dict_ = nullptr;
+  uint32_t from_base_ = 0;
+  uint32_t to_base_ = 0;
+  uint32_t character_ = 0;
+  uint8_t length_ = 0;
+  bool match_ = false;
+  bool prefix_ = false;
+};
+constexpr uint32_t CJK_TRANSITION_CACHE_SIZE = 4096;
+thread_local CJKTransition g_cjk_transitions[CJK_TRANSITION_CACHE_SIZE];
+#endif
+
+int advance_cjk_hit(const ObIFTDict *root, const ObString &character, ObDATrieHit &hit)
+{
+#if OB_FTS_IK_TRANSITION_CACHE
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(character.length() <= 0 || character.length() > 4)) {
+    ret = root->match_with_hit(character, hit, hit);
+  } else {
+    // A DAT transition depends on dictionary identity, its current state, and
+    // the next character. Text positions are deliberately not cached.
+    const uint32_t key = pack_char_key(character);
+    const uint32_t from = hit.base_idx_;
+    const ObIFTDict *dict = hit.dict_;
+    const uint64_t hash = (reinterpret_cast<uint64_t>(dict) >> 4)
+        ^ (static_cast<uint64_t>(from) * 2654435761U)
+        ^ (static_cast<uint64_t>(key) * 2246822519U);
+    CJKTransition &slot = g_cjk_transitions[hash & (CJK_TRANSITION_CACHE_SIZE - 1)];
+    if (slot.root_ == root && slot.dict_ == dict && slot.from_base_ == from
+        && slot.character_ == key && slot.length_ == character.length()) {
+      hit.base_idx_ = slot.to_base_;
+      hit.is_match_ = slot.match_;
+      hit.is_prefix_ = slot.prefix_;
+      if (slot.match_ || slot.prefix_) {
+        hit.end_pos_ += character.length();
+        ++hit.char_cnt_;
+      }
+    } else if (OB_FAIL(root->match_with_hit(character, hit, hit))) {
+      // Errors are not memoized.
+    } else {
+      slot.root_ = root;
+      slot.dict_ = dict;
+      slot.from_base_ = from;
+      slot.to_base_ = hit.base_idx_;
+      slot.character_ = key;
+      slot.length_ = character.length();
+      slot.match_ = hit.is_match_;
+      slot.prefix_ = hit.is_prefix_;
+    }
+  }
+  return ret;
+#else
+  return root->match_with_hit(character, hit, hit);
+#endif
+}
 } // namespace
 
 int ObIKCJKProcessor::push_hit(const ObDATrieHit &hit)
@@ -107,7 +171,7 @@ int ObIKCJKProcessor::do_process(TokenizeContext &ctx,
     int64_t i = 0;
     while (OB_SUCC(ret) && i < hits_cnt_) {
       ObDATrieHit &hit = hits_[i];
-      if (OB_FAIL(dict_main_->match_with_hit(single_word, hit, hit))) {
+      if (OB_FAIL(advance_cjk_hit(dict_main_, single_word, hit))) {
       } else if (hit.is_match()) {
         if (OB_FAIL(ctx.add_token(ctx.fulltext(),
                                   hit.start_pos_,
