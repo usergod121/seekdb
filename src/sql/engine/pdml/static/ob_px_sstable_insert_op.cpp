@@ -27,6 +27,10 @@
 #define OB_DDL_REUSE_DATUM_POINTER_ARRAY 1
 #endif
 
+#ifndef OB_DDL_USE_CACHED_TABLET_SLICE_EXPRS
+#define OB_DDL_USE_CACHED_TABLET_SLICE_EXPRS 1
+#endif
+
 using namespace oceanbase::common;
 using namespace oceanbase::sql;
 using namespace oceanbase::storage;
@@ -65,6 +69,29 @@ int ObPxMultiPartSSTableInsertOp::get_tablet_info_from_row(
     tablet_slice_param->reset();
   }
 
+#if OB_DDL_USE_CACHED_TABLET_SLICE_EXPRS
+  UNUSED(row);
+  // locate_exprs() resolves the plan metadata once during inner_open().
+  // Locate the current datum on every row; child row buffers can change.
+  if (nullptr != tablet_id_expr_) {
+    ObDatum &expr_datum = tablet_id_expr_->locate_expr_datum(get_eval_ctx());
+    tablet_id = expr_datum.get_int();
+  } else {
+    tablet_id = non_partitioned_tablet_id_;
+  }
+
+  if (nullptr != tablet_slice_param) {
+    if (nullptr != slice_info_expr_) {
+      ObDatum &expr_datum = slice_info_expr_->locate_expr_datum(get_eval_ctx());
+      tablet_slice_param->slice_id_ = expr_datum.get_int();
+    } else {
+      tablet_slice_param->slice_idx_ = ctx_.get_px_task_id();
+    }
+    if (OB_UNLIKELY(tablet_slice_param->slice_idx_ >= ObTabletSliceParam::MAX_TABLET_SLICE_COUNT)) {
+      ret = OB_ERR_UNEXPECTED;
+    }
+  }
+#else
   // 1. get tablet_id
   const int64_t part_id_idx = get_spec().row_desc_.get_part_id_index();
   if (NO_PARTITION_ID_FLAG == part_id_idx) {
@@ -100,6 +127,7 @@ int ObPxMultiPartSSTableInsertOp::get_tablet_info_from_row(
     }
   }
 
+#endif
   return ret;
 }
 
