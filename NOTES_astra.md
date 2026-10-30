@@ -164,3 +164,76 @@ growths; add body .24-.32s, snapshot write phases .69-.86s. These do not
 support a dominant repeated-allocation or 60% fixed-overhead theory. Default
 IVF_PQ build7.208s but recall@100~.596 is unacceptable; default iterative
 CAGRA build60.504s is slower. These alternatives are not part of this commit.
+
+## 004: balance NN-descent work with the supported search budget
+
+Files: tools/hipvs_bridge/seekdb_cuvs_bridge.c/.h. Only the default intermediate
+degree (256->128), NN-descent iterations (60->16), and search itopk floor
+(512->2048) change. Graph degree stays128, search width4; official NN_DESCENT
+and official AUTO CAGRA search remain in use. No FP32 data/SQL/index changes,
+CPU fallback, graph cache, query kernel replacement or dataset-specific branch.
+
+Why: real n100 GPU build calls take44.6-45.0s on the authorized proxy machine,
+whereas buffer growth/add and snapshot streams are below one second each.
+An n16/I128 graph with the old search512 budget loses recall (.8953/.8377 on
+128 uniform queries); spending more in the faster official AUTO query recovers
+that quality. Default2048 is intentionally above the initially tested1536 for
+more recall margin. This is not a claim that fewer iterations alone are safe.
+
+Default-on compile switch OB_CUVS_BALANCED_BUILD=1; setting it to0 restores the
+preceding commit's n60/I256/itopk512 defaults. AUTO and scratch retain their own
+independent switches. Runtime A/B without recompilation can set all three:
+SEEKDB_CUVS_NN_DESCENT_ITER=60 SEEKDB_CUVS_INTERMEDIATE_DEGREE=256
+SEEKDB_CUVS_ITOPK_FLOOR=512. Recreate the index to change an already persisted
+graph; changing an environment variable cannot retroactively rebuild a graph.
+Revert this one commit for a source-level rollback to the AUTO-only candidate.
+
+Remote validation, 250000 rows each,4096 individual SQL queries at each k,
+fresh index every build; second proxy reverses candidate/base order:
+
+| proxy/config | DDL+first query | QPS10/100 | recall10/100 |
+|---|---:|---:|---:|
+| uniform256 n100/I256/512/SINGLE |54.65s|129.02/125.36|.9267/.8656|
+| uniform256 n16/I128/1536/AUTO |13.76s|223.27/212.07|.9865/.9722|
+| clustered128 n100/I256/512/SINGLE |47.38s|154.38/148.66|.9978/.9978|
+| clustered128 n16/I128/1536/AUTO |12.42s|208.00/200.39|1.0000/1.0000|
+| uniform256 FINAL DEFAULT (no tuning env vars) |14.60s|218.69/207.84|.9944/.9859|
+| clustered128 FINAL DEFAULT (no tuning env vars) |11.82s|215.00/197.52|1.0000/1.0000|
+
+All40960/409600 IDs per group are complete, legal and unique. The final-default
+two rounds have only PROFILE=1, proving no hidden parameter override is needed.
+Weighting these TWO PROXIES40% clustered/60% uniform yields approximately B3.85,
+Q1.54 and the proxy20-point band. They are NOT official SIFT250K/Hidden250K;
+no claim of a formal20/20 or official recall certification is made. Existing
+official best remains7.247 and47231435 remains pending, never overwritten.
+
+Build.sh and separate AUTO=0/BALANCED_BUILD=0 macro variants compile remotely.
+Final lifecycle checks retain old-budget exact rollback, nq/k growth, errors
+and recovery, same/two-handle threads, and fresh clustered build/restore.
+The budget0 build logs n60/I256, the default logs n16/I128. CPU lib=vsag SQL
+create/insert1024/build/query/drop repeated twice returns IDs0..9 correctly.
+The final250000-row candidate restores its real persisted GPU index and returns
+20 unique legal IDs. CPU route and persistence are not replaced by a proxy.
+
+Resource observations: finalSQL sampled GPU VRAM peaks681MB(uniform256) and
+558MB(cluster128), versus698MB for the clustered baseline. A direct same-process
+uniform build pair samples680MB->825MB(1.213x), but allocator/context retention
+and coarse CLI sampling make this unsuitable for certifying the official1.25x
+gate. Resource accounting must be verified in formal isolated-process runs.
+Host cgroup16CPU/55GiB here differs from formal24CPU/96GB. Timing noise and
+different distributions can reduce formal B/Q; do not predict an exact score.
+
+How to validate: official unchanged compile commands, fresh paired official
+SIFT250K/Hidden250K,4096 single SQL queries for top10/top100. Require every ID
+legal/unique and k complete; SIFT recall>=.95, Hidden>=.90/.85, both within.005
+of same-round baseline, query>=.9x, real GPU path, relative VRAM<=1.25x and
+physical<=45GB. Only then use B>=3/Q>=1.5 to claim20. Do not replace pending
+record47231435. If Hidden fails, increase the supported query budget or restore
+the old graph budget; never lower thresholds or omit data.
+
+Evidence: analysis/astar_runtime/{v3_sql_pairs,v4_default_sql}.jsonl,
+balanced_lifecycle.json, resource_probe.json, cpu_smoke.json. Public Texmex and
+ANN-benchmarks downloads were blocked by the outbound proxy; no bypass or local
+dependency install was attempted. The second large distribution is explicitly
+synthetic clustered data, not SIFT renamed. Default IVFPQ/iterative failures and
+small scratch-only benefit remain negative conclusions, not hidden successes.

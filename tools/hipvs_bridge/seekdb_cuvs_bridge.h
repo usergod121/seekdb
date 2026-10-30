@@ -25,6 +25,8 @@ int seekdb_cuvs_cagra_knn(const float* base, long n, long dim,
  * Official CAGRA AUTO search selection is enabled by default.
  * SEEKDB_CUVS_AUTO_SEARCH=0 before build/load restores the C API's own
  * freshly initialized algorithm default, independently of scratch reuse.
+ * OB_CUVS_BALANCED_BUILD=0 restores the preceding n60/I256/itopk512 defaults;
+ * individual SEEKDB_CUVS_* overrides remain available for runtime A/B tests.
  * All ROCm/cuVS state lives inside the .so; seekdb only ever sees these C symbols. */
 void* seekdb_cuvs_build(const float* base, long n, long dim);
 int   seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,

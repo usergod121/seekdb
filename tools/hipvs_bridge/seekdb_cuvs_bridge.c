@@ -13,10 +13,10 @@
  * Env overrides (all optional, integer > 0):
  *   SEEKDB_CUVS_BUILD_ALGO          "nn_descent" (default) | "ivf_pq"
  *   SEEKDB_CUVS_GRAPH_DEGREE        default 128   (baseline 128)
- *   SEEKDB_CUVS_INTERMEDIATE_DEGREE default 256   (baseline 256)
- *   SEEKDB_CUVS_NN_DESCENT_ITER     default 60    (baseline 100)
+ *   SEEKDB_CUVS_INTERMEDIATE_DEGREE default 128   (baseline 256)
+ *   SEEKDB_CUVS_NN_DESCENT_ITER     default 16    (baseline 100)
  *   SEEKDB_CUVS_SEARCH_WIDTH        default 4
- *   SEEKDB_CUVS_ITOPK_FLOOR         default 512
+ *   SEEKDB_CUVS_ITOPK_FLOOR         default 2048
  */
 #include "seekdb_cuvs_bridge.h"
 #include <cuvs/core/c_api.h>
@@ -41,12 +41,22 @@
 #define OB_CUVS_AUTO_SEARCH 1
 #endif
 
+#ifndef OB_CUVS_BALANCED_BUILD
+#define OB_CUVS_BALANCED_BUILD 1
+#endif
+
 /* ---- build-chain defaults (tuned; overridable for sweeps) ---- */
 #define SK_DEF_GRAPH_DEGREE      128
+#if OB_CUVS_BALANCED_BUILD
+#define SK_DEF_INTERMEDIATE_DEG  128
+#define SK_DEF_NN_DESCENT_ITER    16
+#define SK_DEF_ITOPK_FLOOR      2048
+#else
 #define SK_DEF_INTERMEDIATE_DEG  256
 #define SK_DEF_NN_DESCENT_ITER    60
-#define SK_DEF_SEARCH_WIDTH       4
 #define SK_DEF_ITOPK_FLOOR       512
+#endif
+#define SK_DEF_SEARCH_WIDTH       4
 
 static int sk_env_int(const char *name, int dflt)
 {
