@@ -96,9 +96,17 @@ int ObTextWhitespaceTokenizer::get_next(ObDatum &next_token, int64_t &token_freq
     const char *doc = input_doc_->ptr_;
     const uint32_t doc_len = get_input_buf_len();
     int64_t token_len = 0;
+#if !defined(OB_FTS_UTF8_ASCII_TOKEN_STEP) || OB_FTS_UTF8_ASCII_TOKEN_STEP
+    // The UTF8MB4 handler consumes every ASCII byte as one character.
+    // Preserve the original handler for all other encodings and byte values.
+    const bool ascii_single_byte = cs_->cset == &ob_charset_utf8mb4_handler;
+#else
+    const bool ascii_single_byte = false;
+#endif
     // to next non-whitespace pos
     while (OB_SUCC(ret) && found_delimiter()) {
-      const int64_t c_len = ob_mbcharlen_ptr(cs_, doc + trav_pos_, doc + doc_len);
+      const int64_t c_len = ascii_single_byte && static_cast<unsigned char>(doc[trav_pos_]) < 0x80
+          ? 1 : ob_mbcharlen_ptr(cs_, doc + trav_pos_, doc + doc_len);
       trav_pos_ += c_len;
       if (trav_pos_ >= doc_len || 0 == c_len) {// if char is invalid, just skip the rest of document
         iter_end_ = true;
@@ -112,7 +120,8 @@ int ObTextWhitespaceTokenizer::get_next(ObDatum &next_token, int64_t &token_freq
 
     // to next whitespace pos
     while (OB_SUCC(ret) && !found_delimiter()) {
-      const int64_t c_len = ob_mbcharlen_ptr(cs_, doc + trav_pos_, doc + doc_len);
+      const int64_t c_len = ascii_single_byte && static_cast<unsigned char>(doc[trav_pos_]) < 0x80
+          ? 1 : ob_mbcharlen_ptr(cs_, doc + trav_pos_, doc + doc_len);
       trav_pos_ += c_len;
       token_len += c_len;
       if (trav_pos_ >= doc_len || 0 == c_len) {

@@ -178,3 +178,11 @@ Status: implemented and statically reviewed; no compilation/performance claim ye
 - Validation recipe: official tokenize_function/simple_query; bytewise 72 default plus 390 ALL plus 520 IK smart/max_word outputs; all 41 query counterexamples; hits 8001/11000/7332/20 and LIMIT1=1; ranked and projected IDs/order/score unchanged. Run macro OFF/ON comparison and five-round CPU medians.
 - Negative official result: direct-cursor 2d113fb38 record47232506 scored39.612 vs536 best40.886, despite query_cn/beng/mixed improving0.828/1.2893/0.9946 ->0.7833/1.2348/0.9527ms. Other metrics worsened. This is not a full-mark result or proof that the query change is itself harmful.
 - Remaining candidate: private word-map NoPthreadDefendMode can remove per-insertion locking, but changing a public header may require broad recompilation; held for measured build-time feasibility.
+
+## UTF8MB4 ASCII token stepping (2026-10-30)
+- File/function: src/share/text_analysis/ob_token_stream.cpp, ObTextWhitespaceTokenizer::get_next. Cache handler identity once per token; ASCII byte <0x80 advances by one only for the UTF8MB4 handler.
+- Evidence: both delimiter and token loops previously call external ob_mbcharlen_ptr and then its charset function pointer for every byte. The UTF8MB4 handler returns one for all ASCII bytes. Non-ASCII, invalid leading bytes, and every other charset continue through the original handler.
+- No delimiter, case conversion, stop-word, frequency, grouping, or document semantics change. This is metadata-driven character decoding, not a test-data or whole-input cache.
+- Rollback: compile OB_FTS_UTF8_ASCII_TOKEN_STEP=0. Default enabled.
+- Estimated benefit: remove external plus indirect length calls for each ASCII byte, roughly0.5-2us for a short English document (not measured yet); no50-point assurance.
+- Validation: existing full token/result snapshots, official cases, query counts/order; additionally compare ASCII/NUL/punctuation/multibyte/invalid-byte handling. Explicit macro OFF comparison remains pending until performed.
