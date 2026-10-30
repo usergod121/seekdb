@@ -62,14 +62,65 @@ int ObTextDaaTIter::get_next_rows(const int64_t capacity, int64_t &count)
       ret = OB_ERR_UNEXPECTED;
     } else if (OB_FAIL(pre_process())) {
     } else {
+      const int64_t dimension_count = dim_iters_->count();
+      ObTextRetrievalDaaTTokenIter *tokens[4];
+      for (int64_t i = 0; i < dimension_count; ++i) {
+        // init/reset of this final text iterator already require these types.
+        tokens[i] = static_cast<ObTextRetrievalDaaTTokenIter *>(dim_iters_->at(i));
+      }
+      const bool integer_id = iter_param_->id_proj_expr_->datum_meta_.type_ == common::ObUInt64Type;
       while (OB_SUCC(ret) && count < safe_capacity) {
-        const ObDatum *id = nullptr;
-        if (OB_FAIL(next_small_existence_id(id))) {
-        } else if (OB_FAIL(buffered_domain_ids_[count].from_datum(*id))) {
-        } else {
-          ++count;
-          ++input_row_cnt_;
-          ++output_row_cnt_;
+        for (int64_t i = 0; OB_SUCC(ret) && i < next_round_cnt_; ++i) {
+          const int64_t index = next_round_iter_idxes_[i];
+          ObTextRetrievalDaaTTokenIter *token = tokens[index];
+          if (OB_FAIL(token->ObTextRetrievalDaaTTokenIter::get_next_row())) {
+            if (OB_ITER_END == ret) {
+              iter_domain_ids_[index] = nullptr;
+              ret = OB_SUCCESS;
+            }
+          } else if (OB_FAIL(token->ObTextRetrievalDaaTTokenIter::get_curr_id(iter_domain_ids_[index]))) {
+          } else if (OB_ISNULL(iter_domain_ids_[index])) {
+            ret = OB_ERR_UNEXPECTED;
+          }
+        }
+        int64_t minimum = -1;
+        if (OB_SUCC(ret)) {
+          next_round_cnt_ = 0;
+          for (int64_t i = 0; OB_SUCC(ret) && i < dimension_count; ++i) {
+            const ObDatum *head = iter_domain_ids_[i];
+            if (nullptr != head) {
+              int comparison = 0;
+              if (minimum < 0) {
+                minimum = i;
+                next_round_iter_idxes_[next_round_cnt_++] = i;
+              } else {
+                const ObDatum &other = *iter_domain_ids_[minimum];
+                if (integer_id && !head->is_null() && !other.is_null()) {
+                  const uint64_t a = head->get_uint();
+                  const uint64_t b = other.get_uint();
+                  comparison = (a > b) - (a < b);
+                } else if (OB_FAIL(merge_cmp_.cmp_ids(*head, other, comparison))) {
+                }
+                if (OB_SUCC(ret) && comparison < 0) {
+                  minimum = i;
+                  next_round_cnt_ = 1;
+                  next_round_iter_idxes_[0] = i;
+                } else if (OB_SUCC(ret) && comparison == 0) {
+                  next_round_iter_idxes_[next_round_cnt_++] = i;
+                }
+              }
+            }
+          }
+        }
+        if (OB_SUCC(ret)) {
+          if (minimum < 0) {
+            ret = OB_ITER_END;
+          } else if (OB_FAIL(buffered_domain_ids_[count].from_datum(*iter_domain_ids_[minimum]))) {
+          } else {
+            ++count;
+            ++input_row_cnt_;
+            ++output_row_cnt_;
+          }
         }
       }
       if ((OB_SUCCESS == ret || OB_ITER_END == ret) && count > 0) {

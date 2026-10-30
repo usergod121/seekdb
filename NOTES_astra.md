@@ -162,3 +162,9 @@ Status: implemented and statically reviewed; no compilation/performance claim ye
 - Only vectorized, existence-only, small-union, unbounded scans with no filter or the recognized positive-existence filter use this path. Ranked/top-k, custom filters, limit/offset and other iterator subclasses retain the original path.
 - Removes per-hit virtual processing/filter/cache dispatch, per-hit batch-index guards, relevance buffering, and repeated expression-frame lookups. Expression values and flags are emitted after cursor advancement, once per batch.
 - OB_FTS_BATCH_EXISTENCE_OUTPUT=0 restores the old path. Validate all four hits, explicit ranking/projected order, duplicate/multi-token and custom-filter queries, and official simple_query. Expected nanoseconds saved are unmeasured; no score guarantee.
+
+## Text cursor devirtualization inside exact batch union
+- The final text iterator already casts all dimensions to ObTextRetrievalDaaTTokenIter during reset/reuse. Cache these exact pointers once per batch and directly call the same get_next_row/get_curr_id methods. Advance every cursor with the previous minimum, including duplicates.
+- UInt64 document IDs use the same unsigned ordering directly, retaining generic null/collation comparison for all other datum shapes. IDs are still deep-copied before any cursor advances.
+- Same narrow eligibility and OB_FTS_BATCH_EXISTENCE_OUTPUT=0 rollback as the parent batch path; no ranked, limit, or custom-filter changes. Two virtual calls per advanced posting plus a per-output merge-helper call are removed.
+- Parent batch/lazy candidate 5363fe310 passed startup, official two cases and 462 token snapshots; three query net CPU medians were 735/1115/875us versus accepted516 780/1215/935us. Further expected gain is unmeasured until this refinement is tested.
