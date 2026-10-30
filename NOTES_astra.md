@@ -66,3 +66,24 @@
 - Removing the hidden relevance order made the plan cleaner but ran 3x slower by losing the DaaT path. Setting `need_calc_relevance=false` broke semantics (hits changed to `4000/0/...`). Skipping `ObDASTextRetrievalIter` aggregation returned correct hits with zero gain; its `do_doc_cnt_agg()` was not called in the measured path.
 - Client DDL polling changed the platform score from `26.410` to `26.168`, a regression. Do not revisit it.
 - Build-side aux fill was measured at roughly 24% tokenization and `1.1 us/row` DML for about 1.4-1.6 million rows, using only 1.4-1.7 cores. It remains a separate priority; this commit changes only query_limit.
+
+## 2026-10-30 / DELIVER_004: retain DML datum-pointer slots
+
+- Base: `94164c019`; branch: `astra/fts-build-hotpath-20261030`. Overseer accepted the earlier three query patches and reports record `47231462` at 34.365/50. This is a new build-side candidate, not a measured improvement.
+- File/function: `src/sql/engine/pdml/static/ob_px_sstable_insert_op.cpp`, `ObPxMultiPartSSTableInsertOp::eval_current_row(ObIArray<ObDatum *> &)`. Both ordered and heap scalar SSTable-insert loops call it once per output row.
+- The old loop empties a pointer array and calls virtual `push_back` for every output column on every row. Keep its fixed slot count and write each freshly evaluated pointer directly into the corresponding slot. Preserve `clear_evaluated_flag`, every expression evaluation, all NULL-expression checks, order, and writer calls. A child may change datum addresses: this patch never caches the datum pointers themselves between rows. A count change rebuilds the slots.
+- Rollback: `OB_DDL_REUSE_DATUM_POINTER_ARRAY=0` compiles the old implementation verbatim; default is 1. The public writer API, parser, SQL and sorting are unchanged.
+- Static API check: `ObIArray::prepare_allocate` is declared in `src/oblib/lib/container/ob_iarray.h`; its array implementation reserves and establishes the element count. No build or runtime test was run.
+
+### Quantification and acceptance
+
+- For N output rows and C projected columns, remove N-1 array-reuse calls and N*C virtual append/capacity/count-update paths, replacing them with direct pointer stores. With the brief's 1.4-1.6 million aux rows and a four-column plan, this is 5.6-6.4 million avoided append paths. Confirm the actual C from the compiled plan rather than assuming it for every schema.
+- There is no honest static conversion from that operation count to nanoseconds. Existing `reuse()` already retains allocated capacity: this is NOT elimination of a heap allocation per row and is not a claim of 1.1us -> 0.75us. Measure delta_ns_per_row = 1e9*(old_cpu_sec-new_cpu_sec)/N, and wall time separately because the aux tasks can overlap.
+- An illustrative measured saving of 50ns/row would save 0.070-0.080 CPU seconds for N above; this is an acceptance scenario, not a measured or guaranteed saving. Reject the candidate if paired runs fail to show a repeatable saving above variance.
+- Verification: in Overseer's existing container, compare macro 1/0 builds on repeated `ALTER TABLE docs ADD FULLTEXT INDEX fti_all_ik(title,content) WITH PARSER ik` (drop/recreate that index between paired runs). Record ALTER wall, user+system CPU, cpu/wall cores, writer row count and all three build timings. Run the four MATCH counts 8001/11000/7332/20, explicit relevance-order ID/order comparison, official FTS cases, NULL/empty text and multi-column data. No benchmark/test files are changed by this patch.
+
+### Correct the brief's performance arithmetic
+
+- Reducing a 25%-of-build component by 35% saves at most 8.75% of total build before overlap, not 25%. Reaching the requested total-build reduction needs additional work.
+- Applying the brief's displayed normalized formula to its displayed metrics gives category rates 0.28886 / 0.30150 / 0.53753 and total 37.5965, whereas the stated actual record is 34.365. This discrepancy requires raw platform score details; do not silently replace the actual score with the recomputation. No forecast of 50 is justified before resolving the aggregation/normalization difference.
+- Under that displayed formula, a 10% whole-build relative latency reduction adds about 2.37 total points, not 3.3. Query's displayed category average already exceeds 50%; requiring every individual metric to reach 50% is not implied by the stated category-average formula. Actual platform aggregation remains authoritative.

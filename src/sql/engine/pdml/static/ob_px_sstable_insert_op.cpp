@@ -23,6 +23,10 @@
 #include "sql/engine/basic/ob_temp_column_spill_spool.h"
 #include "data_plane/ddl/ob_ddl_seq_generator.h"
 
+#ifndef OB_DDL_REUSE_DATUM_POINTER_ARRAY
+#define OB_DDL_REUSE_DATUM_POINTER_ARRAY 1
+#endif
+
 using namespace oceanbase::common;
 using namespace oceanbase::sql;
 using namespace oceanbase::storage;
@@ -260,6 +264,27 @@ int ObPxMultiPartSSTableInsertOp::eval_current_row(const int64_t rowkey_column_c
 int ObPxMultiPartSSTableInsertOp::eval_current_row(ObIArray<ObDatum *> &datums)
 {
   int ret = OB_SUCCESS;
+#if OB_DDL_REUSE_DATUM_POINTER_ARRAY
+  clear_evaluated_flag();
+  const ObExprPtrIArray &exprs = get_spec().ins_ctdef_.new_row_;
+  ObEvalCtx &eval_ctx = get_eval_ctx();
+  // The expression list is fixed for this operator. Keep its pointer slots,
+  // but evaluate every expression and refresh every pointer for each row: the
+  // child's datum storage is not required to stay at the same address.
+  if (OB_UNLIKELY(datums.count() != exprs.count())) {
+    datums.reuse();
+    if (OB_FAIL(datums.prepare_allocate(exprs.count()))) {
+    }
+  }
+  ObDatum **datum_ptrs = datums.get_data();
+  for (int64_t i = 0; OB_SUCC(ret) && i < exprs.count(); ++i) {
+    const ObExpr *e = exprs.at(i);
+    if (OB_ISNULL(e)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(e->eval(eval_ctx, datum_ptrs[i]))) {
+    }
+  }
+#else
   datums.reuse();
   clear_evaluated_flag();
   const ObExprPtrIArray &exprs = get_spec().ins_ctdef_.new_row_;
@@ -273,6 +298,7 @@ int ObPxMultiPartSSTableInsertOp::eval_current_row(ObIArray<ObDatum *> &datums)
     } else if (OB_FAIL(datums.push_back(datum))) {
     }
   }
+#endif
   return ret;
 }
 
