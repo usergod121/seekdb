@@ -156,3 +156,9 @@ Status: implemented and statically reviewed; no compilation/performance claim ye
 - Move the bounded transition table into a lazy per-thread arena. Arena owns and releases the table; allocation failure uses the original dictionary walk. No input/output caching or tokenizer-rule changes.
 - Exact keys remain dictionary identities, trie state and character bytes. OB_FTS_IK_TRANSITION_CACHE=0 restores the original traversal. Startup, DEFAULT/ALL token equality, smart-mode coverage, ranked results and official FTS tests are required.
 - Expected benefit is reduced repeated DAT transitions; quantify only after measurement.
+
+## Batch existence-only DaaT output
+- Files: storage/retrieval/ob_text_daat_iter.{h,cpp}. The final text iterator retains the existing sorted-union cursor advancement and ID deduplication. IDs are deep-copied before cursors advance, preserving their lifetime.
+- Only vectorized, existence-only, small-union, unbounded scans with no filter or the recognized positive-existence filter use this path. Ranked/top-k, custom filters, limit/offset and other iterator subclasses retain the original path.
+- Removes per-hit virtual processing/filter/cache dispatch, per-hit batch-index guards, relevance buffering, and repeated expression-frame lookups. Expression values and flags are emitted after cursor advancement, once per batch.
+- OB_FTS_BATCH_EXISTENCE_OUTPUT=0 restores the old path. Validate all four hits, explicit ranking/projected order, duplicate/multi-token and custom-filter queries, and official simple_query. Expected nanoseconds saved are unmeasured; no score guarantee.

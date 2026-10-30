@@ -18,6 +18,10 @@
 
 #include "ob_text_daat_iter.h"
 
+#ifndef OB_FTS_BATCH_EXISTENCE_OUTPUT
+#define OB_FTS_BATCH_EXISTENCE_OUTPUT 1
+#endif
+
 namespace oceanbase
 {
 namespace storage
@@ -36,6 +40,64 @@ int ObTextDaaTIter::init(const ObTextDaaTParam &param)
     function_lookup_mode_ = param.function_lookup_mode_;
   }
   return ret;
+}
+
+int ObTextDaaTIter::get_next_rows(const int64_t capacity, int64_t &count)
+{
+#if OB_FTS_BATCH_EXISTENCE_OUTPUT
+  // This final class has no per-document processing hooks. Preserve the exact
+  // sorted union and deep-copy IDs before advancing any posting cursor.
+  if (IS_INIT && capacity > 0 && use_small_existence_merge_
+      && !iter_param_->limit_param_->is_valid()
+      && iter_param_->eval_ctx_->is_vectorized()
+      && (!iter_param_->need_filter() || filter_is_relevance_gt_zero_)
+      && iter_param_->id_proj_expr_->is_batch_result()
+      && (!iter_param_->need_project_relevance()
+          || iter_param_->relevance_proj_expr_->is_batch_result())) {
+    int ret = OB_SUCCESS;
+    count = 0;
+    const int64_t safe_capacity = MIN(capacity, iter_param_->max_batch_size_);
+    if (OB_UNLIKELY(safe_capacity > iter_param_->eval_ctx_->max_batch_size_
+                   || safe_capacity > buffered_domain_ids_.count())) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(pre_process())) {
+    } else {
+      while (OB_SUCC(ret) && count < safe_capacity) {
+        const ObDatum *id = nullptr;
+        if (OB_FAIL(next_small_existence_id(id))) {
+        } else if (OB_FAIL(buffered_domain_ids_[count].from_datum(*id))) {
+        } else {
+          ++count;
+          ++input_row_cnt_;
+          ++output_row_cnt_;
+        }
+      }
+      if ((OB_SUCCESS == ret || OB_ITER_END == ret) && count > 0) {
+        sql::ObEvalCtx &ctx = *iter_param_->eval_ctx_;
+        sql::ObExpr &id_expr = *iter_param_->id_proj_expr_;
+        ObDatum *id_datums = id_expr.locate_datums_for_update(ctx, count);
+        sql::ObBitVector &id_flags = id_expr.get_evaluated_flags(ctx);
+        for (int64_t i = 0; i < count; ++i) {
+          set_datum_func_(id_datums[i], buffered_domain_ids_[i]);
+          id_flags.set(i);
+        }
+        id_expr.set_evaluated_projected(ctx);
+        if (iter_param_->need_project_relevance()) {
+          sql::ObExpr &relevance_expr = *iter_param_->relevance_proj_expr_;
+          ObDatum *relevances = relevance_expr.locate_datums_for_update(ctx, count);
+          sql::ObBitVector &flags = relevance_expr.get_evaluated_flags(ctx);
+          for (int64_t i = 0; i < count; ++i) {
+            relevances[i].set_double(1.0);
+            flags.set(i);
+          }
+          relevance_expr.set_evaluated_projected(ctx);
+        }
+      }
+    }
+    return ret;
+  }
+#endif
+  return ObSRDaaTIterImpl::get_next_rows(capacity, count);
 }
 
 void ObTextDaaTIter::reset()
