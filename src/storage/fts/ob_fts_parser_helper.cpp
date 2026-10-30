@@ -429,6 +429,35 @@ int ObFTParseHelper::segment(
   return ret;
 }
 
+uint64_t ObFTParseHelper::get_segmentation_signature() const
+{
+  // The parser and every property that changes what a text segments into. Two helpers with equal
+  // signatures produce equal words for equal text, so a cache of segmentation results can be keyed
+  // on the signature.
+  uint64_t signature = 1469598103934665603ULL;
+  signature = (signature ^ static_cast<uint64_t>(reinterpret_cast<uintptr_t>(parser_desc_)))
+              * 1099511628211ULL;
+  signature = (signature ^ static_cast<uint64_t>(parser_property_.min_token_size_))
+              * 1099511628211ULL;
+  signature = (signature ^ static_cast<uint64_t>(parser_property_.max_token_size_))
+              * 1099511628211ULL;
+  signature = (signature ^ static_cast<uint64_t>(parser_property_.ngram_token_size_))
+              * 1099511628211ULL;
+  signature = (signature ^ static_cast<uint64_t>(parser_property_.ik_mode_smart_ ? 1 : 0))
+              * 1099511628211ULL;
+  signature = (signature ^ static_cast<uint64_t>(parser_property_.min_ngram_token_size_))
+              * 1099511628211ULL;
+  signature = (signature ^ static_cast<uint64_t>(parser_property_.max_ngram_token_size_))
+              * 1099511628211ULL;
+  signature = (signature ^ static_cast<uint64_t>(parser_property_.stopword_table_.hash()))
+              * 1099511628211ULL;
+  signature = (signature ^ static_cast<uint64_t>(parser_property_.dict_table_.hash()))
+              * 1099511628211ULL;
+  signature = (signature ^ static_cast<uint64_t>(parser_property_.quantifier_table_.hash()))
+              * 1099511628211ULL;
+  return signature;
+}
+
 ObFTParseHelper::ObFTParseHelper()
     : allocator_(nullptr),
     parser_desc_(nullptr),

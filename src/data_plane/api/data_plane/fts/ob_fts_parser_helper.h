@@ -257,6 +257,11 @@ public:
 
   void reset();
 
+  // Identifies what this helper does to a text: the parser and the parser properties. Two helpers
+  // with the same signature turn the same text into the same words, which is what a cache of
+  // segmentation results keys on.
+  uint64_t get_segmentation_signature() const;
+
   TO_STRING_KV(KP_(allocator), K_(parser_name), KP_(parser_desc), K_(is_inited));
 
 private:
