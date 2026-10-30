@@ -108,3 +108,16 @@
 - Container recipe: compare macro 1/0 with DELIVER_004 held fixed, paired fresh fulltext index builds (all/title+content, content, beng). Record wall/user+system CPU, output rows and ns/row; reject if no repeatable signal. Check four MATCH counts 8001/11000/7332/20, explicit relevance-order IDs/order, LIMIT variants, NULL/empty/multicolumn cases, official FTS cases. Also test partitioned/unpartitioned inserts, ordered slice boundary/retry, heap and idempotent/autoincrement/doc-id paths. The change applies to scalar SSTable inserts generally, not only FTS.
 - Risk: assumes initialized operator metadata is stable throughout execution, as current locate_exprs/call sites imply. No row datum address is retained between child advances. Any routing/retry discrepancy requires macro=0 or revert this commit; no balancing fallback or silent error suppression.
 - Negative conclusion: current small pointer/metadata changes have no measured score gain yet. They cannot substantiate 1.1us -> 0.75us or 50/50. Bigger caller-side parsing reuse needs the exact DDL call-chain evidence first. The duplicate row_arena.reuse is real but does not justify a large standalone score claim.
+
+
+# 008: small existence-only DaaT union
+
+Status: implemented and statically reviewed; no compilation/performance claim yet.
+
+- Files: src/storage/retrieval/ob_sparse_daat_iter.{h,cpp}; functions init_merge_strategy, next_small_existence_id, do_one_merge_round, reuse.
+- For boolean existence-only retrieval with 1-4 token iterators and no pushed top-k, maintain each live sorted head and select its minimum ID directly. Advance every cursor equal to that ID, preserving union deduplication. Larger token sets and all observable-score/top-k paths retain existing heap/WAND.
+- Critical-path evidence: supplied query_cn/beng/mixed costs are 134.8/154.5/172.2 ns per hit. This removes repeated heap push/rebuild/top/pop and generic score transport for eligible hits. Target is 115-135 ns/hit; actual reduction and score remain unknown until paired measurements.
+- Rollback: OB_FTS_SMALL_EXISTENCE_MERGE=0 restores parent merge strategy. OB_FTS_DAAT_IMPLICIT_BOOL_SCORE=0 restores separate 007 behavior.
+- Verify official counts 8001/11000/7332/20; LIMIT 1=1; explicit MATCH score DESC LIMIT 20 IDs, ordering and scores unchanged; projected-parent IDs/order unchanged; official tokenize_function/simple_query PASS; >=20 TOKENIZE strings byte-identical; macro-off output identical. Benchmark >=5 paired CPU-time runs and official raw metrics, no local 100/100 score claim.
+- Risks checked statically: initial/reused rounds advance every token before inspecting head pointers; exhausted cursors become null; tied minimum IDs advance together; untaken cursors retain their original datum ownership. Empty token lists, errors, batches, filters and projection retain existing lifecycle. No tokenizer/ranked-result semantics changed.
+- Negative conclusion: no measured ns saving or platform gain exists yet. Environmental build/startup repairs do not count as optimization.

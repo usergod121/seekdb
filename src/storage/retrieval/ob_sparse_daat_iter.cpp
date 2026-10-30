@@ -26,6 +26,10 @@
 #define OB_FTS_DAAT_IMPLICIT_BOOL_SCORE 1
 #endif
 
+#ifndef OB_FTS_SMALL_EXISTENCE_MERGE
+#define OB_FTS_SMALL_EXISTENCE_MERGE 1
+#endif
+
 namespace oceanbase
 {
 namespace storage
@@ -91,7 +95,8 @@ ObSRDaaTIterImpl::ObSRDaaTIterImpl()
     next_round_iter_idxes_(),
     next_round_cnt_(0),
     set_datum_func_(nullptr),
-    filter_is_relevance_gt_zero_(false)
+    filter_is_relevance_gt_zero_(false),
+    use_small_existence_merge_(false)
 {
 }
 
@@ -139,6 +144,7 @@ int ObSRDaaTIterImpl::init(
         next_round_iter_idxes_[i] = i;
       }
       init_filter_shape();
+      init_merge_strategy();
     }
 
     if (OB_SUCC(ret)) {
@@ -169,6 +175,7 @@ void ObSRDaaTIterImpl::reset()
   input_row_cnt_ = 0;
   output_row_cnt_ = 0;
   is_inited_ = false;
+  use_small_existence_merge_ = false;
 }
 
 void ObSRDaaTIterImpl::reuse(const bool switch_tablet)
@@ -182,6 +189,7 @@ void ObSRDaaTIterImpl::reuse(const bool switch_tablet)
     for (int64_t i = 0; i < next_round_cnt_; ++i) {
       next_round_iter_idxes_[i] = i;
     }
+    init_merge_strategy();
   }
   if (OB_NOT_NULL(relevance_collector_)) {
     relevance_collector_->reuse();
@@ -269,13 +277,84 @@ int ObSRDaaTIterImpl::do_one_merge_round(int64_t &count)
   bool need_project = true;
   double relevance = 0.0;
   const ObDatum *id_datum = nullptr;
-  if (OB_FAIL(fill_merge_heap())) {
+  if (use_small_existence_merge_) {
+    relevance = 1.0;
+    if (OB_FAIL(next_small_existence_id(id_datum))) {
+    } else if (OB_FAIL(process_collected_row(*id_datum, relevance))) {
+    }
+  } else if (OB_FAIL(fill_merge_heap())) {
     if (OB_UNLIKELY(OB_ITER_END != ret)) {
     }
   } else if (OB_FAIL(collect_dims_by_id(id_datum, relevance, need_project))) {
-  } else if (need_project && OB_FAIL(filter_on_demand(count, relevance, need_project))) {
-  } else if (need_project && OB_FAIL(cache_result(count, *id_datum, relevance))) {
-    if (OB_ITER_END != ret) {
+  }
+  if (OB_SUCC(ret)) {
+    if (need_project && OB_FAIL(filter_on_demand(count, relevance, need_project))) {
+    } else if (need_project && OB_FAIL(cache_result(count, *id_datum, relevance))) {
+      if (OB_ITER_END != ret) {
+      }
+    }
+  }
+  return ret;
+}
+
+void ObSRDaaTIterImpl::init_merge_strategy()
+{
+  use_small_existence_merge_ = false;
+#if OB_FTS_SMALL_EXISTENCE_MERGE && OB_FTS_EXISTENCE_ONLY_DAAT
+  // This is a small sorted-union operation, not ranked top-k retrieval.
+  use_small_existence_merge_ = iter_param_->bool_relevance_only_
+      && !iter_param_->need_pushdown_topk()
+      && dim_iters_->count() > 0 && dim_iters_->count() <= 4;
+#endif
+}
+
+int ObSRDaaTIterImpl::next_small_existence_id(const ObDatum *&id_datum)
+{
+  int ret = OB_SUCCESS;
+  id_datum = nullptr;
+  // Advance every cursor that produced the previous ID, including duplicates.
+  // Other cursors retain their current head and its existing datum lifetime.
+  for (int64_t i = 0; OB_SUCC(ret) && i < next_round_cnt_; ++i) {
+    const int64_t idx = next_round_iter_idxes_[i];
+    ObISRDaaTDimIter *dim_iter = dim_iters_->at(idx);
+    if (OB_ISNULL(dim_iter)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(dim_iter->get_next_row())) {
+      if (OB_ITER_END == ret) {
+        iter_domain_ids_[idx] = nullptr;
+        ret = OB_SUCCESS;
+      }
+    } else if (OB_FAIL(dim_iter->get_curr_id(iter_domain_ids_[idx]))) {
+    } else if (OB_ISNULL(iter_domain_ids_[idx])) {
+      ret = OB_ERR_UNEXPECTED;
+    }
+  }
+  int64_t min_idx = -1;
+  if (OB_SUCC(ret)) {
+    next_round_cnt_ = 0;
+    for (int64_t i = 0; OB_SUCC(ret) && i < dim_iters_->count(); ++i) {
+      if (OB_NOT_NULL(iter_domain_ids_[i])) {
+        int cmp_ret = 0;
+        if (min_idx < 0) {
+          min_idx = i;
+          next_round_iter_idxes_[next_round_cnt_++] = i;
+        } else if (OB_FAIL(merge_cmp_.cmp_ids(
+                       *iter_domain_ids_[i], *iter_domain_ids_[min_idx], cmp_ret))) {
+        } else if (cmp_ret < 0) {
+          min_idx = i;
+          next_round_cnt_ = 1;
+          next_round_iter_idxes_[0] = i;
+        } else if (0 == cmp_ret) {
+          next_round_iter_idxes_[next_round_cnt_++] = i;
+        }
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (min_idx < 0) {
+        ret = OB_ITER_END;
+      } else {
+        id_datum = iter_domain_ids_[min_idx];
+      }
     }
   }
   return ret;

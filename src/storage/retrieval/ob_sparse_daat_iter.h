@@ -45,6 +45,10 @@ struct ObSRMergeCmp
 
   int init(sql::ObDatumMeta id_meta, const ObFixedArray<const ObDatum *, ObIAllocator> *iter_ids);
   int cmp(const ObSRMergeItem &l, const ObSRMergeItem &r, int64_t &cmp_ret);
+  int cmp_ids(const ObDatum &l, const ObDatum &r, int &cmp_ret) const
+  {
+    return cmp_func_(l, r, cmp_ret, nullptr);
+  }
 private:
   inline const ObDatum &get_id_datum(const int64_t iter_idx)
   {
@@ -94,6 +98,8 @@ protected:
   virtual int project_results(const int64_t count);
   int init_merge_heap(const int64_t count);
   void init_filter_shape();
+  void init_merge_strategy();
+  int next_small_existence_id(const ObDatum *&id_datum);
 protected:
   ObIAllocator *iter_allocator_;
   ObSparseRetrievalMergeParam *iter_param_;
@@ -111,6 +117,7 @@ protected:
   // filter result is identical to a sign test on the relevance value we already hold and
   // the generic expression evaluation can be skipped for every matched document.
   bool filter_is_relevance_gt_zero_;
+  bool use_small_existence_merge_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObSRDaaTIterImpl);
 };
