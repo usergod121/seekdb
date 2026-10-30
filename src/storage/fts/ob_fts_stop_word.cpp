@@ -274,8 +274,8 @@ int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
     // Preserve the existing first-occurrence value of one, including for an
     // iterator that supplies a frequency greater than one. Only an existing
     // entry receives word_freq. set_or_update hashes and finds that entry once.
-    auto add_frequency = [word_freq](int64_t &count) {
-      count += word_freq;
+    auto add_frequency = [word_freq](common::hash::HashMapPair<ObFTWord, int64_t> &entry) {
+      entry.second += word_freq;
     };
     if (OB_FAIL(word_map_.set_or_update(word, 1, add_frequency))) {
     }

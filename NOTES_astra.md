@@ -125,7 +125,7 @@ Status: implemented and statically reviewed; no compilation/performance claim ye
 ## 010: one hash lookup for grouped token frequency
 
 - File/function: src/storage/fts/ob_fts_stop_word.cpp, ObAddWord::groupby_word.
-- Existing repeated-token path hashes the same collation-aware word for failed insert, read, and overwrite. Use existing ObHashMap::set_or_update to insert or update the frequency in one bucket traversal; its callback receives the value reference, not the key/value pair.
+- Existing repeated-token path hashes the same collation-aware word for failed insert, read, and overwrite. Use existing ObHashMap::set_or_update to insert or update the frequency in one bucket traversal. Compilation showed that this API forwards the full HashMapPair through its table default preprocessor; use that explicit public type rather than the private ObHashMap::pair_type alias. The initial value-only callback did not compile and was corrected before testing or push.
 - Preserve the current first-occurrence value1 even when word_freq>1, increment existing entries by word_freq, preserve nongrouped insertion, token bytes, collation hash/equality, and insertion order.
 - Quantification: for U distinct words and D repeated occurrences, hash calls fall from U+3D to U+D. Total saving depends on observed D and hash cost; no measured ns or score gain is claimed before A/B.
 - Rollback OB_FTS_SINGLE_LOOKUP_WORD_FREQUENCY=0 compiles the exact old grouped path. Default1.
