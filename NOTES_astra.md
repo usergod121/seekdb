@@ -150,3 +150,9 @@ Status: implemented and statically reviewed; no compilation/performance claim ye
 - Five runs of 20000 calls, median net server CPU: IK 42.5 to 41.5 us; basic English 21.0 to 20.5 us; repeated English 26.5 to 21.5 us. Ordinary tokenizer gains are about 2%, not evidence of a major platform score increase.
 - User explicitly requested official platform testing without waiting for lengthy local performance testing. This candidate is submitted as measurement, not as a proven 50-point result.
 - Source equivalence with compiled and runtime-verified 5de46ae55 is checked before push. Rollback: revert the retained changes or use their default-on macros at 0.
+
+## IK prefix transitions: lazy thread cache retry
+- The failed binary TLS memory image was 0x33fe8 bytes versus 0x13fe8 for the running parent, exactly 128KiB larger. This is a startup-failure hypothesis, not a proven backtrace.
+- Move the bounded transition table into a lazy per-thread arena. Arena owns and releases the table; allocation failure uses the original dictionary walk. No input/output caching or tokenizer-rule changes.
+- Exact keys remain dictionary identities, trie state and character bytes. OB_FTS_IK_TRANSITION_CACHE=0 restores the original traversal. Startup, DEFAULT/ALL token equality, smart-mode coverage, ranked results and official FTS tests are required.
+- Expected benefit is reduced repeated DAT transitions; quantify only after measurement.
