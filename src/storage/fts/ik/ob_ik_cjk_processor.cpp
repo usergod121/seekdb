@@ -29,6 +29,53 @@ namespace oceanbase
 {
 namespace storage
 {
+namespace
+{
+// The walk of one character from the root of the dictionary depends on nothing but that character
+// and the immutable dictionary, so its outcome is remembered: a text repeats characters a lot and
+// the same characters come back in the next document (or the next TOKENIZE call), while the walk
+// itself costs a range search plus a double array trie lookup per character.
+//
+// The cache is per thread and holds only pointers to dictionary data that never changes once the
+// dictionary set was built, so it needs no lock and cannot hand out stale state: an entry is only
+// used when it was filled by the very dictionary the walk starts from.
+struct SingleCharHit
+{
+  const ObIFTDict *start_dict_ = nullptr; // the range dictionary the walk started from
+  const ObIFTDict *hit_dict_ = nullptr;   // the dictionary the walk landed in
+  uint32_t char_key_ = 0;                 // the character bytes, zero means the slot is empty
+  uint8_t char_len_ = 0;
+  uint8_t is_match_ = 0;
+  uint8_t is_prefix_ = 0;
+  int32_t base_idx_ = 0;
+};
+
+constexpr int64_t SINGLE_CHAR_CACHE_SIZE = 1024;
+constexpr int64_t SINGLE_CHAR_CACHE_MASK = SINGLE_CHAR_CACHE_SIZE - 1;
+
+struct SingleCharCache
+{
+  SingleCharHit hits_[SINGLE_CHAR_CACHE_SIZE];
+};
+thread_local SingleCharCache g_single_char_cache;
+
+// A character is at most four bytes in utf8mb4, and a valid character never contains a zero byte,
+// so the packed bytes are never zero and zero can mark an empty slot.
+inline uint32_t pack_char_key(const ObString &word)
+{
+  uint32_t key = 0;
+  for (int64_t i = 0; i < word.length() && i < 4; ++i) {
+    key = (key << 8) | static_cast<uint32_t>(static_cast<uint8_t>(word.ptr()[i]));
+  }
+  return key;
+}
+
+inline int64_t single_char_slot(const uint32_t key)
+{
+  return static_cast<int64_t>((key * 2654435761U) >> 15) & SINGLE_CHAR_CACHE_MASK;
+}
+} // namespace
+
 int ObIKCJKProcessor::push_hit(const ObDATrieHit &hit)
 {
   int ret = OB_SUCCESS;
@@ -91,7 +138,28 @@ int ObIKCJKProcessor::do_process(TokenizeContext &ctx,
       // Start from this char
       // find range of dict
       ObDATrieHit hit(dict_main_, ctx.get_cursor());
-      if (OB_FAIL(dict_main_->match(single_word, hit))) {
+      const uint32_t char_key = pack_char_key(single_word);
+      SingleCharHit &slot = g_single_char_cache.hits_[single_char_slot(char_key)];
+      if (slot.char_key_ == char_key && slot.char_len_ == char_len && slot.start_dict_ == dict_main_) {
+        // Same character as an earlier walk from the same range dictionary: reuse its outcome. Only
+        // the position dependent fields have to be derived from this position.
+        hit.dict_ = slot.hit_dict_;
+        hit.base_idx_ = static_cast<uint32_t>(slot.base_idx_);
+        hit.is_match_ = (0 != slot.is_match_);
+        hit.is_prefix_ = (0 != slot.is_prefix_);
+        hit.char_cnt_ = (hit.is_match_ || hit.is_prefix_) ? 1 : 0;
+        hit.end_pos_ = hit.start_pos_ + ((hit.is_match_ || hit.is_prefix_) ? char_len : 0);
+      } else if (OB_FAIL(dict_main_->match(single_word, hit))) {
+      } else {
+        slot.start_dict_ = dict_main_;
+        slot.hit_dict_ = hit.dict_;
+        slot.char_key_ = char_key;
+        slot.char_len_ = char_len;
+        slot.is_match_ = hit.is_match_ ? 1 : 0;
+        slot.is_prefix_ = hit.is_prefix_ ? 1 : 0;
+        slot.base_idx_ = static_cast<int32_t>(hit.base_idx_);
+      }
+      if (OB_FAIL(ret)) {
       } else if (hit.is_match()) {
         // output token
         if (OB_FAIL(push_hit(hit))) {
