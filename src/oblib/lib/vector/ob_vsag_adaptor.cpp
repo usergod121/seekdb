@@ -79,6 +79,14 @@ using namespace vsag;
 // runs seekdb's real vector-adaptor data path on the GPU. PoC: single writer per
 // index, results allocated with the handle's allocator (drop-in with VSAG path).
 namespace {
+// Opt-in diagnostics only. Keep clocks and per-row accounting out of scored runs.
+static bool ob_cuvs_profile_enabled() {
+  static const bool enabled = [] {
+    const char *value = ::getenv("SEEKDB_CUVS_PROFILE");
+    return value != nullptr && 0 == ::strcmp(value, "1");
+  }();
+  return enabled;
+}
 struct ObCuvsEntry {
   std::shared_ptr<void> bridge_;// opaque handle from seekdb_cuvs_build
   int dim_ = 0;
@@ -87,6 +95,12 @@ struct ObCuvsEntry {
   std::vector<int64_t> buf_ids_;// accumulated external vids from add_index
   size_t built_n_ = 0;          // #vectors present when cuVS was last (re)built
   bool vsag_ready_ = false;     // CPU fallback is built only when it is needed
+  size_t add_calls_ = 0;
+  size_t vector_growths_ = 0;
+  size_t id_growths_ = 0;
+  size_t vector_growth_bytes_ = 0;
+  int64_t add_wait_us_ = 0;
+  int64_t add_body_us_ = 0;
 };
 static std::mutex g_ob_cuvs_mu;
 static std::map<void *, ObCuvsEntry *> g_ob_cuvs_reg;
@@ -171,14 +185,30 @@ static void ob_cuvs_register(void *key, const float *vectors, const int64_t *ids
 static void ob_cuvs_add(void *key, const float *vectors, const int64_t *ids,
                         int dim, int size) {
   if (vectors == nullptr || ids == nullptr || dim <= 0 || size <= 0) { return; }
+  const bool profile = ob_cuvs_profile_enabled();
+  const int64_t start_us = profile ? ObTimeUtility::current_time() : 0;
   std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
+  const int64_t locked_us = profile ? ObTimeUtility::current_time() : 0;
   ObCuvsEntry *&slot = g_ob_cuvs_reg[key];
   if (slot == nullptr) { slot = new ObCuvsEntry(); slot->dim_ = dim; }
   if (slot->dim_ == 0) { slot->dim_ = dim; }
   if (slot->dim_ != dim) { return; }
+  const size_t old_vector_capacity = profile ? slot->buf_vecs_.capacity() : 0;
+  const size_t old_vector_size = profile ? slot->buf_vecs_.size() : 0;
+  const size_t old_id_capacity = profile ? slot->buf_ids_.capacity() : 0;
   slot->buf_vecs_.insert(slot->buf_vecs_.end(), vectors,
                          vectors + static_cast<size_t>(dim) * size);
   slot->buf_ids_.insert(slot->buf_ids_.end(), ids, ids + size);
+  if (profile) {
+    ++slot->add_calls_;
+    if (slot->buf_vecs_.capacity() != old_vector_capacity) {
+      ++slot->vector_growths_;
+      slot->vector_growth_bytes_ += old_vector_size * sizeof(float);
+    }
+    if (slot->buf_ids_.capacity() != old_id_capacity) { ++slot->id_growths_; }
+    slot->add_wait_us_ += locked_us - start_us;
+    slot->add_body_us_ += ObTimeUtility::current_time() - locked_us;
+  }
 }
 static bool ob_cuvs_vsag_ready(void *key) {
   std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
@@ -392,6 +422,7 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
     return false;
   }
   const int64_t start_us = ObTimeUtility::current_time();
+  const bool profile = ob_cuvs_profile_enabled();
   bool built = false;
   if (ent->bridge_ == nullptr || ent->built_n_ != n) {
     std::shared_ptr<void> nb = ob_cuvs_build_big_stack(ent->buf_vecs_.data(),
@@ -405,6 +436,7 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
     ent->bridge_ = nb; ent->built_n_ = n; ent->ids_ = ent->buf_ids_;
     built = true;
   }
+  const int64_t graph_start_us = profile ? ObTimeUtility::current_time() : 0;
   ObCuvsSnapshotFile graph;
   ObCuvsSnapshotJob job{graph.path_, ent->bridge_.get(), static_cast<long>(n), ent->dim_, false, -1};
   if (graph.file_ == nullptr || !ob_cuvs_snapshot_big_stack(job) ||
@@ -415,6 +447,7 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
   const uint64_t graph_bytes = static_cast<uint64_t>(::ftello(graph.file_));
   ::rewind(graph.file_);
   const int64_t build_us = ObTimeUtility::current_time() - start_us;
+  const int64_t graph_done_us = profile ? start_us + build_us : 0;
   const int32_t dim32 = ent->dim_;
   const int32_t reserved = 0;
   const int64_t n64 = static_cast<int64_t>(n);
@@ -429,6 +462,7 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
     LOG_WARN("[OBVSAG][cuVS] failed to write snapshot stream", K(ret), KP(key), K(n));
     return true;
   }
+  const int64_t raw_done_us = profile ? ObTimeUtility::current_time() : 0;
   std::vector<char> chunk(65536);
   uint64_t remaining = graph_bytes;
   while (remaining > 0) {
@@ -439,6 +473,18 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
     }
     remaining -= bytes;
   }
+  if (profile) {
+    const int64_t end_us = ObTimeUtility::current_time();
+    const int64_t gpu_build_host_us = graph_start_us - start_us;
+    const int64_t graph_serialize_host_us = graph_done_us - graph_start_us;
+    const int64_t outer_vector_stream_us = raw_done_us - graph_done_us;
+    const int64_t graph_stream_us = end_us - raw_done_us;
+    LOG_INFO("[OBVSAG][cuVS][profile] snapshot phases", KP(key), K(n), K(dim32),
+             K(gpu_build_host_us), K(graph_serialize_host_us), K(outer_vector_stream_us),
+             K(graph_stream_us), K(graph_bytes), K(ent->add_calls_),
+             K(ent->vector_growths_), K(ent->id_growths_), K(ent->vector_growth_bytes_),
+             K(ent->add_wait_us_), K(ent->add_body_us_));
+  }
   LOG_INFO("[OBVSAG][cuVS] serialized GPU CAGRA snapshot", KP(key), K(n), K(dim32),
            K(built), K(build_us), K(graph_bytes));
   return true;
@@ -447,6 +493,8 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
 // Consumes the stream after the magic. Registers and marks the handle for GPU search.
 static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
   int ret = OB_SUCCESS;
+  const bool profile = ob_cuvs_profile_enabled();
+  const int64_t profile_start_us = profile ? ObTimeUtility::current_time() : 0;
   uint64_t graph_bytes = 0;
   int32_t dim32 = 0;
   int32_t reserved = 0;
@@ -474,6 +522,7 @@ static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("[OBVSAG][cuVS] truncated snapshot payload", K(ret), KP(key), K(n64));
     } else {
+      const int64_t raw_done_us = profile ? ObTimeUtility::current_time() : 0;
       ObCuvsSnapshotFile graph;
       std::vector<char> chunk(65536);
       uint64_t remaining = graph_bytes;
@@ -484,6 +533,7 @@ static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
         }
         remaining -= bytes;
       }
+      const int64_t graph_file_done_us = profile ? ObTimeUtility::current_time() : 0;
       ObCuvsSnapshotJob job{graph.path_, nullptr, static_cast<long>(n), dim32, true, -1};
       if (graph.file_ == nullptr || remaining != 0 || ::fflush(graph.file_) != 0 ||
           !ob_cuvs_snapshot_big_stack(job)) {
@@ -491,6 +541,14 @@ static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
         ret = OB_ERR_VSAG_RETURN_ERROR;
         LOG_WARN("[OBVSAG][cuVS] failed to load CAGRA graph from snapshot", K(ret), KP(key), K(n64));
         return ret;
+      }
+      if (profile) {
+        const int64_t outer_vector_read_us = raw_done_us - profile_start_us;
+        const int64_t graph_file_write_us = graph_file_done_us - raw_done_us;
+        const int64_t graph_load_host_us = ObTimeUtility::current_time() - graph_file_done_us;
+        LOG_INFO("[OBVSAG][cuVS][profile] restore phases", KP(key), K(n64), K(dim32),
+                 K(outer_vector_read_us), K(graph_file_write_us), K(graph_load_host_us),
+                 K(graph_bytes));
       }
       ent->bridge_ = ob_cuvs_wrap(job.handle_);
       ent->built_n_ = n;
