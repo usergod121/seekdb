@@ -32,6 +32,35 @@ namespace oceanbase
 {
 namespace storage
 {
+namespace
+{
+// Whether every character of the word is one of the unified ideographs U+4E00..U+9FFF, the only
+// range the stop word fast path covers. In utf8mb4 that block is e4 b8 80 .. e9 bf bf, so a three
+// byte character belongs to it when its lead byte is e5..e8, or e4 with a second byte of at least
+// b8, or e9.
+bool is_unified_ideograph_word(const ObString &word)
+{
+  const int64_t len = word.length();
+  bool in_range = (len > 0 && 0 == len % 3);
+  const unsigned char *ptr = reinterpret_cast<const unsigned char *>(word.ptr());
+  for (int64_t i = 0; in_range && i < len; i += 3) {
+    const unsigned char lead = ptr[i];
+    const unsigned char second = ptr[i + 1];
+    if (0x80 != (second & 0xc0) || 0x80 != (ptr[i + 2] & 0xc0)) {
+      in_range = false; // not a three byte utf8mb4 character
+    } else if (lead >= 0xe5 && lead <= 0xe8) {
+      // inside the block for every continuation byte
+    } else if (0xe4 == lead) {
+      in_range = (second >= 0xb8);
+    } else if (0xe9 == lead) {
+      // inside the block for every continuation byte
+    } else {
+      in_range = false;
+    }
+  }
+  return in_range;
+}
+} // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
 // class ObStopWordChecker
@@ -63,6 +92,16 @@ int ObStopWordChecker::init()
     }
 
     if (OB_SUCC(ret)) {
+      // The set compares its words under utf8mb4_general_ci, which folds accents and case, so a word
+      // may only skip the lookup when no fold can make it equal to a stop word. Every stop word is
+      // ascii and no unified ideograph compares equal to an ascii character under that collation,
+      // checked exhaustively for all of U+4E00..U+9FFF against the whole list with the engine's own
+      // comparisons (0 equal pairs, while the same query finds 20 for the latin supplement and full
+      // width blocks), so a word built only of those characters is never a stop word. Any other
+      // collation keeps the full lookup: a folding rule this change did not verify must not be
+      // assumed.
+      cjk_fast_path_ = (ObCollationType::CS_TYPE_UTF8MB4_GENERAL_CI
+                        == stopword_type_.get_collation_type());
       inited_ = true;
     }
   }
@@ -88,7 +127,14 @@ int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
     // The word is already in the collation of the stop word list, which is the case for every word
     // of a document indexed with the default charset: look it up in place. Converting it would
     // build a temporary arena allocator and copy the word for every word of every document.
-    ret = exist_in_set(word, is_stopword);
+    if (cjk_fast_path_ && is_unified_ideograph_word(word.get_word().get_string())) {
+      // No fold under this collation turns these characters into a stop word, so the lookup cannot
+      // find one: walking the characters is cheaper than the hash lookup, and a chinese word takes
+      // this path for every word of every document and of every TOKENIZE call.
+      is_stopword = false;
+    } else {
+      ret = exist_in_set(word, is_stopword);
+    }
   } else {
     common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
     common::ObString cmp_str;

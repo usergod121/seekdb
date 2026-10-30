@@ -84,6 +84,9 @@ private:
   // Look the word up in the set, which already holds words of stopword_type_.
   int exist_in_set(const ObFTWord &word, bool &is_stopword);
 
+  // Whether a word built only of unified ideographs may skip the lookup, see check_stopword().
+  bool cjk_fast_path_ = false;
+
   static const int64_t DEFAULT_STOPWORD_BUCKET_NUM = 37L;
   typedef common::hash::ObHashSet<storage::ObFTWord> StopWordSet;
 
