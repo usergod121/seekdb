@@ -22,6 +22,9 @@ int seekdb_cuvs_cagra_knn(const float* base, long n, long dim,
  * Search scratch is private to each handle. With default reuse enabled,
  * concurrent searches of one handle are serialized through a per-handle mutex.
  * SEEKDB_CUVS_REUSE=0 before build/load restores per-call allocation.
+ * Official CAGRA AUTO search selection is enabled by default.
+ * SEEKDB_CUVS_AUTO_SEARCH=0 before build/load restores the C API's own
+ * freshly initialized algorithm default, independently of scratch reuse.
  * All ROCm/cuVS state lives inside the .so; seekdb only ever sees these C symbols. */
 void* seekdb_cuvs_build(const float* base, long n, long dim);
 int   seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,

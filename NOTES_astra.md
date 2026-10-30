@@ -2,7 +2,10 @@
 
 Base: verified niter=60 commit `8e61b873d4d7315cec911d929e953315328da821`,
 itself a direct descendant of frozen V5 `634888d9b037153fa143d2c913ba4b25503e1d62`.
-These patches have not been compiled, executed, pushed, or submitted.
+Remote bridge and seekdb compilation and the first proxy experiments are now
+complete (2026-10-30). No candidate is formally scored or submitted; detailed
+measurements are in analysis/astar_audit/GPU_MEASUREMENTS_20261030.md outside
+this source tree. The historical sections below retain their original scope.
 
 ## 001: opt-in stage and vector-growth diagnostics
 
@@ -96,6 +99,68 @@ Validation in the existing authorized GPU environment:
    unset and swapped candidate/base order. Retained scratch is not a GPU-kernel
    acceleration; use the paired score, not the wrapper operation count.
 
-Known remaining risk: fixed-version hipVS header/runtime semantics and pthread
-linking have not been compiled here. A candidate is not a verified deliverable
-until the above checks pass. Never submit automatically.
+Historical pre-GPU risk: fixed-version hipVS header/runtime semantics and pthread
+linking had not yet been compiled. The authorized remote build and the final
+lifecycle checks below now cover these items. Official dataset recall and
+explicit GPU allocation/copy fault injection remain unverified; do not submit
+automatically or replace the existing pending evaluation.
+
+## 003: official AUTO search selection with exact legacy opt-out
+
+Files: tools/hipvs_bridge/seekdb_cuvs_bridge.c and .h. Functions: scratch params
+creation, build/deserialize initialization, seekdb_cuvs_search.
+
+The frozen /opt/hipvs C API was inspected at runtime: search params initialize
+algo=0 (SINGLE_CTA), itopk=64, width=1. The wrapper keeps its established width4
+and itopk floor512 but now explicitly selects the fixed official AUTO algorithm.
+No search kernel, input vector precision, graph format or build default changes.
+AUTO is a supported C API parameter; it can select MULTI_CTA for nq=1 while
+retaining library heuristics for larger batches.
+
+OB_CUVS_AUTO_SEARCH=1 is the compile default. SEEKDB_CUVS_AUTO_SEARCH=0 before
+build/load restores the SearchParams object's captured original algorithm, not
+a guessed enum default. This switch is independent of SEEKDB_CUVS_REUSE=0.
+Both flags off restore the n60 wrapper's transient allocation/search-mode route.
+Revert this commit to remove AUTO selection entirely.
+
+Measured on a disposable authorized W7900D/ROCm7.2.4 instance, 250000x256
+uniform proxy data (NOT official Hidden250K/SIFT250K):
+- Same graph, 512 direct single-row calls: default 3.663/3.711ms vs AUTO
+  .666/.667ms for top10/top100. Recall .9285/.8645 vs .9326/.8709; IDs valid.
+- Fresh-index 4096 individual SQL queries: 133.65/131.00 QPS vs
+  228.09/220.02 QPS (~1.69x geometric). Recall .9254/.8651 vs .9303/.8723.
+- Same stored index, recovery before each run, default/AUTO/AUTO/default:
+  default top10 130.73/126.46, top100 127.00/119.44 QPS;
+  AUTO top10 219.99/219.06, top100 205.88/201.46 QPS. All k IDs legal/unique.
+  Restore phase logs confirm deserialization, not graph rebuild.
+- AUTO recall varies slightly across repeated process runs (.9290-.9295 at10,
+  .8718-.8720 at100); approximate multi-CTA search is not claimed bitwise
+  repeatable. Compare integrity, distance correctness and recall gates; do not
+  mistake permitted algorithm nondeterminism for scratch corruption.
+
+Final code validation completed remotely on the fixed ROCm7.2.4/hipVS image:
+- Official build.sh succeeded for the default candidate; an independent
+  OB_CUVS_AUTO_SEARCH=0 binary also compiled with the same flags.
+- On the same 250000x256 serialized graph, runtime AUTO=0 with REUSE=0/1 and
+  macro0 with runtime AUTO=1 match the original bridge IDs/distances exactly
+  through 10/100/10, nq1->4, k1000 failure, then successful k10 recovery.
+- Default AUTO works with REUSE=0/1 through the same sequence (including
+  successful k1000), returning unique legal IDs, finite sorted distances,
+  and distances matching direct float32 L2 within 2e-4 relative/absolute.
+- Two threads on one handle and two threads across independent AUTO/legacy
+  handles pass integrity/distance checks. No shared result scratch is used.
+- Two fresh build/search/serialize/free/restore cycles on an independent
+  8192x64 clustered proxy also pass. This is lifecycle coverage, not a claim
+  that official SIFT/Hidden recall gates have been certified.
+- Evidence: analysis/astar_runtime/auto_lifecycle.json, samegraph_results.jsonl.
+  Timing inside lifecycle checks includes CPU validation, so it is not used
+  for the speed claim. No explicit GPU allocation/copy fault injection yet.
+The proxy speed is not a formal score. Official best remains 7.247/20; query
+alone with build1.270x caps near9.046. Do not replace pending n48 record47231435.
+
+Build attribution/negative results: n100 DDL+first query50.61s, build host
+44.591s; n60 34.77s, build28.829s. add calls250000 but only19 capacity
+growths; add body .24-.32s, snapshot write phases .69-.86s. These do not
+support a dominant repeated-allocation or 60% fixed-overhead theory. Default
+IVF_PQ build7.208s but recall@100~.596 is unacceptable; default iterative
+CAGRA build60.504s is slower. These alternatives are not part of this commit.

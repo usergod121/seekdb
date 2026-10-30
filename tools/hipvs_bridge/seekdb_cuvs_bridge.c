@@ -37,6 +37,10 @@
 #define OB_CUVS_REUSE_SEARCH_SCRATCH 1
 #endif
 
+#ifndef OB_CUVS_AUTO_SEARCH
+#define OB_CUVS_AUTO_SEARCH 1
+#endif
+
 /* ---- build-chain defaults (tuned; overridable for sweeps) ---- */
 #define SK_DEF_GRAPH_DEGREE      128
 #define SK_DEF_INTERMEDIATE_DEG  256
@@ -65,6 +69,7 @@ typedef struct {
   size_t query_bytes, neighbor_bytes, distance_bytes;
   cuvsCagraSearchParams_t params;
   size_t default_itopk;
+  enum cuvsCagraSearchAlgo default_algo;
 } sk_search_scratch;
 
 typedef struct {
@@ -75,6 +80,7 @@ typedef struct {
   int graph_deg, inter_deg, niter;
   const char *algo;
   int reuse_search_scratch;
+  int auto_search;
   pthread_mutex_t search_mutex;
   sk_search_scratch scratch;
 } sk_cuvs_index;
@@ -83,6 +89,12 @@ static int sk_reuse_search_scratch(void)
 {
   const char *value = getenv("SEEKDB_CUVS_REUSE");
   return OB_CUVS_REUSE_SEARCH_SCRATCH && (value == NULL || strcmp(value, "0") != 0);
+}
+
+static int sk_auto_search(void)
+{
+  const char *value = getenv("SEEKDB_CUVS_AUTO_SEARCH");
+  return OB_CUVS_AUTO_SEARCH && (value == NULL || strcmp(value, "0") != 0);
 }
 
 static void sk_clear_search_scratch(sk_cuvs_index *h, sk_search_scratch *s)
@@ -119,6 +131,7 @@ static int sk_prepare_search_scratch(sk_cuvs_index *h, sk_search_scratch *s,
   if (s->params == NULL) {
     if (cuvsCagraSearchParamsCreate(&s->params) != CUVS_SUCCESS) return 14;
     s->default_itopk = s->params->itopk_size;
+    s->default_algo = s->params->algo;
   }
   return 0;
 }
@@ -129,6 +142,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   if (!h) return NULL;
   if (pthread_mutex_init(&h->search_mutex, NULL) != 0) { free(h); return NULL; }
   h->reuse_search_scratch = sk_reuse_search_scratch();
+  h->auto_search = sk_auto_search();
   if (cuvsResourcesCreate(&h->res) != CUVS_SUCCESS) {
     pthread_mutex_destroy(&h->search_mutex); free(h); return NULL;
   }
@@ -197,6 +211,10 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
       // Reset from the fresh-object default on EVERY call: 100 -> 10 must not
       // retain a larger itopk and silently alter the old query parameters.
       s->params->itopk_size = s->default_itopk < required_itopk ? required_itopk : s->default_itopk;
+      // The frozen C API initializes algo to SINGLE_CTA. Let the fixed
+      // cuVS implementation select the supported kernel for this batch size.
+      // The opt-out restores the freshly captured C API default exactly.
+      s->params->algo = h->auto_search ? AUTO : s->default_algo;
       s->params->search_width = (uint32_t)sk_env_int("SEEKDB_CUVS_SEARCH_WIDTH", SK_DEF_SEARCH_WIDTH);
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
@@ -241,6 +259,7 @@ void* seekdb_cuvs_deserialize(const char* filename, long n, long dim)
   if (!index) return NULL;
   if (pthread_mutex_init(&index->search_mutex, NULL) != 0) { free(index); return NULL; }
   index->reuse_search_scratch = sk_reuse_search_scratch();
+  index->auto_search = sk_auto_search();
   if (cuvsResourcesCreate(&index->res) != CUVS_SUCCESS) goto fail;
   if (cuvsCagraIndexParamsCreate(&index->ip) != CUVS_SUCCESS) goto fail_res;
   if (cuvsCagraIndexCreate(&index->idx) != CUVS_SUCCESS) goto fail_ip;
