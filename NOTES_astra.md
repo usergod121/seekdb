@@ -168,3 +168,13 @@ Status: implemented and statically reviewed; no compilation/performance claim ye
 - UInt64 document IDs use the same unsigned ordering directly, retaining generic null/collation comparison for all other datum shapes. IDs are still deep-copied before any cursor advances.
 - Same narrow eligibility and OB_FTS_BATCH_EXISTENCE_OUTPUT=0 rollback as the parent batch path; no ranked, limit, or custom-filter changes. Two virtual calls per advanced posting plus a per-output merge-helper call are removed.
 - Parent batch/lazy candidate 5363fe310 passed startup, official two cases and 462 token snapshots; three query net CPU medians were 735/1115/875us versus accepted516 780/1215/935us. Further expected gain is unmeasured until this refinement is tested.
+
+## Skip empty private word-map clear (2026-10-30)
+- Files/functions: src/storage/fts/ob_fts_parser_helper.cpp, ObFTParseHelper::segment. Both actual callers construct a new stack-local ObFTWordMap before parsing; the helper remains correct for a previously populated map.
+- Evidence: ObHashTable::reuse -> clear locks and visits every bucket even for size zero. This is repeated per TOKENIZE invocation and per DDL document, before any words are inserted.
+- Change: skip only the empty-map clear; non-empty maps retain the complete existing reuse. Hashing, insertion, parser rules, token output, document counts, and input data remain unchanged.
+- Rollback: compile with OB_FTS_SKIP_EMPTY_WORD_MAP_CLEAR=0 for the original unconditional clear. Default is enabled.
+- Expected benefit: remove B bucket-lock acquisitions and B bucket visits per newly created map. Microsecond-scale per short TOKENIZE is plausible; no measured full-mark guarantee.
+- Validation recipe: official tokenize_function/simple_query; bytewise 72 default plus 390 ALL plus 520 IK smart/max_word outputs; all 41 query counterexamples; hits 8001/11000/7332/20 and LIMIT1=1; ranked and projected IDs/order/score unchanged. Run macro OFF/ON comparison and five-round CPU medians.
+- Negative official result: direct-cursor 2d113fb38 record47232506 scored39.612 vs536 best40.886, despite query_cn/beng/mixed improving0.828/1.2893/0.9946 ->0.7833/1.2348/0.9527ms. Other metrics worsened. This is not a full-mark result or proof that the query change is itself harmful.
+- Remaining candidate: private word-map NoPthreadDefendMode can remove per-insertion locking, but changing a public header may require broad recompilation; held for measured build-time feasibility.
