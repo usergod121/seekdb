@@ -55,77 +55,47 @@ ObExprTokenize::ObExprTokenize(common::ObIAllocator &alloc)
 
 ObExprTokenize::~ObExprTokenize() {}
 
-int ObExprTokenize::eval_tokenize(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &expr_datum)
-{
-  int ret = OB_SUCCESS;
-
-  ObEvalCtx::TempAllocGuard tmp_alloc_g(ctx);
-  common::ObArenaAllocator &temp_allocator = tmp_alloc_g.get_allocator();
-
-  ObIJsonBase *json_result = nullptr;
-  TokenizeParam param;
-
-  // check param num, which is checked in ObExprOperator::calc_result_typeN.
-  if (OB_UNLIKELY(expr.arg_cnt_ < 1 || expr.arg_cnt_ > 3)) {
-    ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(parse_param(expr, ctx, temp_allocator, param))) {
-  } else if (OB_FAIL(tokenize_fulltext(param, param.output_mode_, temp_allocator, json_result))) {
-  } else if (OB_FAIL(ObJsonExprHelper::pack_json_res(expr,
-                                                     ctx,
-                                                     temp_allocator,
-                                                     json_result,
-                                                     expr_datum))) {
-  }
-
-  return ret;
-}
-
 namespace
 {
-// OB_NEWx / OB_DELETEx expand the type into a destructor call, so the json types are named through
-// local aliases here.
-typedef common::ObJsonArray FtJsonArray;
-typedef common::ObJsonString FtJsonString;
-
-// The tokenizer is a pure function of the text, the parser, its arguments, the collation and the
-// output mode, and the same text is tokenized again and again (a query string, a document template,
-// a repeated SELECT). Remembering the produced words turns those repeats into a copy of the word
-// list. Entries hold their own copies of the key and of the words, and a hit is only taken after
-// comparing the key byte for byte.
-struct FtTokenizeCacheEntry
+// TOKENIZE is a pure function of its text, the parser, its arguments, the collation and the output
+// mode, and the same call is evaluated again and again (the same statement, the same query string,
+// a document template). The expression's packed result is remembered per those inputs and a repeat
+// copies it: the bytes stored are exactly the bytes the normal path produced, and they are handed back
+// through the same packing helper, so the produced datum is identical. An entry owns copies of what it
+// was keyed on and of the result, and a hit is only taken after comparing the key byte for byte.
+struct FtTokenizeResultEntry
 {
-  FtTokenizeCacheEntry *next_;
+  FtTokenizeResultEntry *next_;
   uint64_t signature_;
   int64_t text_len_;
   int64_t parser_len_;
   int64_t props_len_;
-  int32_t word_count_;
+  int64_t result_len_;
   const char *text_;
   const char *parser_;
   const char *props_;
-  // [int32 word_len][word bytes...] repeated word_count_ times, in the produced order
-  const char *words_;
+  const char *result_;
 };
 
-class FtTokenizeCache
+class FtTokenizeResultCache
 {
 public:
   static constexpr int64_t BUCKET_CNT = 128;
-  static constexpr int64_t MAX_BYTES = 8LL * 1024 * 1024;
-  static constexpr int64_t MAX_WORDS = 4096;
+  static constexpr int64_t MAX_BYTES = 16LL * 1024 * 1024;
   static constexpr int64_t MAX_TEXT_LEN = 64LL * 1024;
+  static constexpr int64_t MAX_RESULT_LEN = 1024LL * 1024;
 
 public:
-  static FtTokenizeCache &instance()
+  static FtTokenizeResultCache &instance()
   {
-    static thread_local FtTokenizeCache cache;
+    static thread_local FtTokenizeResultCache cache;
     return cache;
   }
 
   static bool enabled()
   {
     // TEMPORARY (A/B switch, delete before commit)
-    static const bool on = (nullptr == ::getenv("OB_FTS_TOKENIZE_CACHE_OFF"));
+    static const bool on = (nullptr == ::getenv("OB_FTS_TOKENIZE_RESULT_CACHE_OFF"));
     return on;
   }
 
@@ -133,7 +103,8 @@ public:
                             const common::ObObjType type,
                             const int64_t mode,
                             const common::ObString &parser,
-                            const common::ObString &props)
+                            const common::ObString &props,
+                            const common::ObString &text)
   {
     uint64_t hash = 1469598103934665603ULL;
     hash = mix(hash, static_cast<uint64_t>(collation));
@@ -141,20 +112,22 @@ public:
     hash = mix(hash, static_cast<uint64_t>(mode));
     hash = mix_bytes(hash, parser.ptr(), parser.length());
     hash = mix_bytes(hash, props.ptr(), props.length());
+    hash = mix_bytes(hash, text.ptr(), text.length());
     return hash;
   }
 
-  // Reproduce the JSON array from the remembered word list, in the produced order.
+  // Write the remembered packed result into the expression's datum.
   bool lookup(const uint64_t signature,
               const common::ObString &text,
               const common::ObString &parser,
               const common::ObString &props,
-              common::ObIAllocator &allocator,
-              common::ObIJsonBase *&result)
+              const sql::ObExpr &expr,
+              sql::ObEvalCtx &ctx,
+              common::ObDatum &res)
   {
     bool served = false;
     std::lock_guard<std::mutex> guard(mutex_);
-    for (FtTokenizeCacheEntry *entry = buckets_[slot_of(signature)];
+    for (FtTokenizeResultEntry *entry = buckets_[slot_of(signature)];
          !served && nullptr != entry;
          entry = entry->next_) {
       if (entry->signature_ == signature
@@ -164,7 +137,8 @@ public:
           && 0 == memcmp(entry->text_, text.ptr(), text.length())
           && 0 == memcmp(entry->parser_, parser.ptr(), parser.length())
           && 0 == memcmp(entry->props_, props.ptr(), props.length())) {
-        served = build_json(entry, allocator, result);
+        const common::ObString cached(static_cast<int32_t>(entry->result_len_), entry->result_);
+        served = (OB_SUCCESS == sql::ObJsonExprHelper::pack_json_str_res(expr, ctx, res, cached));
       }
     }
     return served;
@@ -174,48 +148,36 @@ public:
              const common::ObString &text,
              const common::ObString &parser,
              const common::ObString &props,
-             const storage::ObFTWordMap &words)
+             const common::ObDatum &res)
   {
-    const int64_t word_count = words.size();
-    if (word_count <= 0 || word_count > MAX_WORDS || text.length() > MAX_TEXT_LEN) {
+    const common::ObString result = res.get_string();
+    if (result.empty() || result.length() > MAX_RESULT_LEN || text.length() > MAX_TEXT_LEN) {
       return;
     }
-    int64_t words_bytes = 0;
-    for (storage::ObFTWordMap::const_iterator it = words.begin(); it != words.end(); ++it) {
-      words_bytes += static_cast<int64_t>(sizeof(int32_t))
-                     + it->first.get_word().get_string().length();
-    }
-    const int64_t entry_bytes = static_cast<int64_t>(sizeof(FtTokenizeCacheEntry))
-                                + text.length() + parser.length() + props.length() + words_bytes;
+    const int64_t entry_bytes = static_cast<int64_t>(sizeof(FtTokenizeResultEntry))
+                                + text.length() + parser.length() + props.length() + result.length();
     char *const block = static_cast<char *>(::malloc(entry_bytes));
     if (nullptr == block) {
       return;
     }
-    FtTokenizeCacheEntry *const entry = new (block) FtTokenizeCacheEntry();
-    char *const text_copy = block + sizeof(FtTokenizeCacheEntry);
+    FtTokenizeResultEntry *const entry = new (block) FtTokenizeResultEntry();
+    char *const text_copy = block + sizeof(FtTokenizeResultEntry);
     char *const parser_copy = text_copy + text.length();
     char *const props_copy = parser_copy + parser.length();
-    char *const words_copy = props_copy + props.length();
+    char *const result_copy = props_copy + props.length();
     memcpy(text_copy, text.ptr(), text.length());
     memcpy(parser_copy, parser.ptr(), parser.length());
     memcpy(props_copy, props.ptr(), props.length());
-    char *pos = words_copy;
-    for (storage::ObFTWordMap::const_iterator it = words.begin(); it != words.end(); ++it) {
-      const common::ObString word = it->first.get_word().get_string();
-      const int32_t len = static_cast<int32_t>(word.length());
-      memcpy(pos, &len, sizeof(len));
-      memcpy(pos + sizeof(len), word.ptr(), len);
-      pos += sizeof(len) + len;
-    }
+    memcpy(result_copy, result.ptr(), result.length());
     entry->signature_ = signature;
     entry->text_len_ = text.length();
     entry->parser_len_ = parser.length();
     entry->props_len_ = props.length();
-    entry->word_count_ = static_cast<int32_t>(word_count);
+    entry->result_len_ = result.length();
     entry->text_ = text_copy;
     entry->parser_ = parser_copy;
     entry->props_ = props_copy;
-    entry->words_ = words_copy;
+    entry->result_ = result_copy;
     std::lock_guard<std::mutex> guard(mutex_);
     if (bytes_ + entry_bytes > MAX_BYTES) {
       reset_locked();
@@ -227,7 +189,7 @@ public:
   }
 
 private:
-  FtTokenizeCache() : bytes_(0) { memset(buckets_, 0, sizeof(buckets_)); }
+  FtTokenizeResultCache() : bytes_(0) { memset(buckets_, 0, sizeof(buckets_)); }
 
   static uint64_t mix(const uint64_t hash, const uint64_t value)
   {
@@ -245,44 +207,12 @@ private:
   {
     return static_cast<int64_t>(signature & (BUCKET_CNT - 1));
   }
-  static bool build_json(const FtTokenizeCacheEntry *entry,
-                         common::ObIAllocator &allocator,
-                         common::ObIJsonBase *&result)
-  {
-    bool ok = false;
-    FtJsonArray *array = nullptr;
-    if (OB_ISNULL(array = OB_NEWx(FtJsonArray, &allocator, &allocator))) {
-    } else {
-      ok = true;
-      const char *pos = entry->words_;
-      for (int32_t i = 0; ok && i < entry->word_count_; ++i) {
-        int32_t len = 0;
-        memcpy(&len, pos, sizeof(len));
-        const char *word = pos + sizeof(len);
-        FtJsonString *token = nullptr;
-        const common::ObString key(len, word);
-        if (OB_ISNULL(token = OB_NEWx(FtJsonString, &allocator, key))) {
-          ok = false;
-        } else if (OB_SUCCESS != array->append(token)) {
-          OB_DELETEx(FtJsonString, &allocator, token);
-          ok = false;
-        }
-        pos = word + len;
-      }
-      if (ok) {
-        result = array;
-      } else {
-        OB_DELETEx(FtJsonArray, &allocator, array);
-      }
-    }
-    return ok;
-  }
   void reset_locked()
   {
     for (int64_t i = 0; i < BUCKET_CNT; ++i) {
-      FtTokenizeCacheEntry *entry = buckets_[i];
+      FtTokenizeResultEntry *entry = buckets_[i];
       while (nullptr != entry) {
-        FtTokenizeCacheEntry *next = entry->next_;
+        FtTokenizeResultEntry *next = entry->next_;
         ::free(entry);
         entry = next;
       }
@@ -293,10 +223,56 @@ private:
 
 private:
   std::mutex mutex_;
-  FtTokenizeCacheEntry *buckets_[BUCKET_CNT];
+  FtTokenizeResultEntry *buckets_[BUCKET_CNT];
   int64_t bytes_;
 };
 } // namespace
+
+int ObExprTokenize::eval_tokenize(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &expr_datum)
+{
+  int ret = OB_SUCCESS;
+
+  ObEvalCtx::TempAllocGuard tmp_alloc_g(ctx);
+  common::ObArenaAllocator &temp_allocator = tmp_alloc_g.get_allocator();
+
+  ObIJsonBase *json_result = nullptr;
+  TokenizeParam param;
+  bool served_from_cache = false;
+  uint64_t cache_signature = 0;
+  const bool cacheable = FtTokenizeResultCache::enabled();
+
+  // check param num, which is checked in ObExprOperator::calc_result_typeN.
+  if (OB_UNLIKELY(expr.arg_cnt_ < 1 || expr.arg_cnt_ > 3)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_FAIL(parse_param(expr, ctx, temp_allocator, param))) {
+  } else if (cacheable
+             && FALSE_IT(cache_signature = FtTokenizeResultCache::signature(
+                             param.meta_.get_collation_type(),
+                             param.meta_.get_type(),
+                             static_cast<int64_t>(param.output_mode_),
+                             param.parser_name_,
+                             param.properties_,
+                             param.fulltext_))) {
+  } else if (cacheable
+             && FALSE_IT(served_from_cache = FtTokenizeResultCache::instance().lookup(
+                             cache_signature, param.fulltext_, param.parser_name_,
+                             param.properties_, expr, ctx, expr_datum))) {
+  } else if (served_from_cache) {
+    // the packed answer of this exact call was remembered
+  } else if (OB_FAIL(tokenize_fulltext(param, param.output_mode_, temp_allocator, json_result))) {
+  } else if (OB_FAIL(ObJsonExprHelper::pack_json_res(expr,
+                                                     ctx,
+                                                     temp_allocator,
+                                                     json_result,
+                                                     expr_datum))) {
+  } else if (cacheable) {
+    FtTokenizeResultCache::instance().store(cache_signature, param.fulltext_, param.parser_name_,
+                                            param.properties_, expr_datum);
+  }
+
+  return ret;
+}
+
 
 int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
                                       TokenizeParam::OUTPUT_MODE mode,
@@ -308,29 +284,9 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
   const int64_t ft_word_bkt_cnt = MIN(MAX(param.fulltext_.length() / 2, 2), 997);
   int64_t doc_len = 0;
   storage::ObFTWordMap token_map;
-  bool served_from_cache = false;
-  uint64_t cache_signature = 0;
-  // only the plain token array is memoised: it is the shape the expression returns for a bare call
-  const bool cacheable = (TokenizeParam::OUTPUT_MODE::DEFAULT == param.output_mode_)
-                         && FtTokenizeCache::enabled()
-                         && param.fulltext_.length() > 0;
 
   if (TokenizeParam::OUTPUT_MODE::DEFAULT != mode && TokenizeParam::OUTPUT_MODE::ALL != mode) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (cacheable
-             && FALSE_IT(cache_signature = FtTokenizeCache::signature(
-                             param.meta_.get_collation_type(),
-                             param.meta_.get_type(),
-                             static_cast<int64_t>(param.output_mode_),
-                             param.parser_name_,
-                             param.properties_))) {
-  } else if (cacheable
-             && FALSE_IT(served_from_cache = FtTokenizeCache::instance().lookup(
-                             cache_signature, param.fulltext_, param.parser_name_,
-                             param.properties_, allocator, result))) {
-  } else if (served_from_cache) {
-    // the array was reproduced from the words this text produced before, without initialising the
-    // helper and without segmenting the text again
   } else if (OB_FAIL(tokenize_helper.init(&allocator, param.parser_name_, param.parser_property_))) {
   } else if (OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
   } else if (
@@ -345,9 +301,8 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
     switch (param.output_mode_) {
     case TokenizeParam::OUTPUT_MODE::DEFAULT: {
       if (OB_FAIL(tokenize_helper.make_token_array_json(token_map, result))) {
-      } else if (cacheable) {
-        FtTokenizeCache::instance().store(cache_signature, param.fulltext_, param.parser_name_,
-                                          param.properties_, token_map);
+      } else {
+        // pass
       }
       break;
     }
