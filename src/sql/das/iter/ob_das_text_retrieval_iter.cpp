@@ -584,7 +584,7 @@ int ObDASTextRetrievalIter::init_calc_exprs()
       }
     }
 
-    if (OB_SUCC(ret) && !ir_ctdef_->bool_relevance_only_) {
+    if (OB_SUCC(ret)) {
       sql::ObExpr *doc_length_param_expr = relevance_expr->args_[sql::ObExprBM25::DOC_LENGTH_PARAM_IDX];
       if (OB_UNLIKELY(nullptr == doc_length_param_expr || doc_length_param_expr->type_ != T_REF_COLUMN ||
                       doc_length_param_expr != ir_ctdef_->inv_scan_doc_length_col_ ||
