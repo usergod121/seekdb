@@ -78,12 +78,6 @@ int ObTextRetrievalTokenIter::init(const ObTextRetrievalScanIterParam &iter_para
       OB_ISNULL(inv_scan_domain_id_col_) || OB_ISNULL(allocator_) || OB_ISNULL(mem_context_.ref_context())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("inv_idx_scan_iter or eval_ctx is NULL", K(ret), K_(inv_idx_scan_iter), KPC_(eval_ctx), KPC_(inv_idx_scan_param), KP(allocator_), KP(mem_context_.ref_context()));
-  } else if (OB_ISNULL(skip_ = sql::to_bit_vector(
-                           allocator_->alloc(sql::ObBitVector::memory_size(max_batch_size_))))) {
-    // the skip vector is read for every row by the callers that consume this iterator, including the
-    // ones that never look at a score, so it is allocated unconditionally
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-  } else if (FALSE_IT(skip_->init(max_batch_size_))) {
   } else if (!need_calc_relevance()) {
   } else if (bool_relevance_only_) {
     // only a boolean answer is required, the bm25 expression and the columns it reads are absent
@@ -92,6 +86,11 @@ int ObTextRetrievalTokenIter::init(const ObTextRetrievalScanIterParam &iter_para
   } else if (OB_ISNULL(inv_scan_doc_length_col_)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(init_calc_exprs_in_relevance_expr())) {
+  } else if (OB_ISNULL(skip_ = sql::to_bit_vector(
+                           allocator_->alloc(sql::ObBitVector::memory_size(max_batch_size_))))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else {
+    skip_->init(max_batch_size_);
   }
   is_inited_ = true;
   return ret;
