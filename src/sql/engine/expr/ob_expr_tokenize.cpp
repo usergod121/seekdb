@@ -317,7 +317,6 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
 
   if (TokenizeParam::OUTPUT_MODE::DEFAULT != mode && TokenizeParam::OUTPUT_MODE::ALL != mode) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(tokenize_helper.init(&allocator, param.parser_name_, param.parser_property_))) {
   } else if (cacheable
              && FALSE_IT(cache_signature = FtTokenizeCache::signature(
                              param.meta_.get_collation_type(),
@@ -330,7 +329,9 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
                              cache_signature, param.fulltext_, param.parser_name_,
                              param.properties_, allocator, result))) {
   } else if (served_from_cache) {
-    // the array was reproduced from the words this text produced before
+    // the array was reproduced from the words this text produced before, without initialising the
+    // helper and without segmenting the text again
+  } else if (OB_FAIL(tokenize_helper.init(&allocator, param.parser_name_, param.parser_property_))) {
   } else if (OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
   } else if (
       (0 != param.fulltext_.length())
