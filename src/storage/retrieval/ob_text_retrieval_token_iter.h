@@ -83,10 +83,19 @@ public:
   virtual int update_scan_param(const ObString &token, common::ObArenaAllocator &allocator);
 public:
   sql::ObBitVector *get_skip() { return skip_; }
+  // Whether this row was filtered out. A missing vector means "nothing skipped": the callers that only
+  // need a boolean answer never allocate one, and it must not be dereferenced as null.
+  OB_INLINE bool row_is_skipped(const int64_t idx) const
+  {
+    return OB_NOT_NULL(skip_) && skip_->at(idx);
+  }
   int get_token_doc_cnt(int64_t &token_doc_cnt) const;
   double get_max_token_relevance() const { return max_token_relevance_; }
   bool bool_relevance_only() const { return bool_relevance_only_; }
 private:
+  // Evaluate the relevance expression over the batch. Tolerates a missing skip vector instead of
+  // dereferencing it, and reports the situation rather than crashing.
+  int eval_batch_with_skip(sql::ObExpr *expr, const int64_t count);
   int init_calc_exprs_in_relevance_expr();
   void clear_batch_wise_evaluated_flag(const int64_t count);
   void clear_row_wise_evaluated_flag();
@@ -139,6 +148,7 @@ public:
   virtual int get_curr_score(double &score) const override;
   virtual int get_curr_id(const ObDatum *&id_datum) const override;
 public:
+  int eval_batch_with_skip(sql::ObExpr *expr, const int64_t count);
   int get_token_doc_cnt(int64_t &token_doc_cnt) const { return token_iter_->get_token_doc_cnt(token_doc_cnt); }
   virtual int get_dim_max_score(double &score) override {
     int ret = OB_SUCCESS;

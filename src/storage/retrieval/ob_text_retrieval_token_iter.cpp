@@ -78,17 +78,19 @@ int ObTextRetrievalTokenIter::init(const ObTextRetrievalScanIterParam &iter_para
       OB_ISNULL(inv_scan_domain_id_col_) || OB_ISNULL(allocator_) || OB_ISNULL(mem_context_.ref_context())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("inv_idx_scan_iter or eval_ctx is NULL", K(ret), K_(inv_idx_scan_iter), KPC_(eval_ctx), KPC_(inv_idx_scan_param), KP(allocator_), KP(mem_context_.ref_context()));
+  } else if (OB_ISNULL(skip_ = sql::to_bit_vector(
+                           allocator_->alloc(sql::ObBitVector::memory_size(max_batch_size_))))) {
+    // The consumers of this iterator read the skip vector for every row they consume, including the
+    // ones that never look at a score, so it is allocated before the branches that decide whether a
+    // score is computed. All bits zero means "no row skipped", which is what those callers rely on.
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else if (FALSE_IT(skip_->init(max_batch_size_))) {
   } else if (!need_calc_relevance()) {
   } else if (OB_ISNULL(relevance_expr_) || OB_ISNULL(inv_idx_agg_expr_) || OB_ISNULL(inv_idx_agg_iter_)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_ISNULL(inv_scan_doc_length_col_)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(init_calc_exprs_in_relevance_expr())) {
-  } else if (OB_ISNULL(skip_ = sql::to_bit_vector(
-                           allocator_->alloc(sql::ObBitVector::memory_size(max_batch_size_))))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-  } else {
-    skip_->init(max_batch_size_);
   }
   is_inited_ = true;
   return ret;
@@ -235,10 +237,23 @@ void ObTextRetrievalTokenIter::clear_batch_wise_evaluated_flag(const int64_t cou
   }
 }
 
+int ObTextRetrievalTokenIter::eval_batch_with_skip(sql::ObExpr *expr, const int64_t count)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(expr)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_ISNULL(skip_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("skip vector is null", K(ret), K(count));
+  } else if (OB_FAIL(expr->eval_batch(*eval_ctx_, *skip_, count))) {
+  }
+  return ret;
+}
+
 int ObTextRetrievalTokenIter::batch_eval_relevance_expr(const int64_t count)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(relevance_expr_->eval_batch(*eval_ctx_, *skip_, count))) {
+  if (OB_FAIL(eval_batch_with_skip(relevance_expr_, count))) {
   }
   return ret;
 }
@@ -504,6 +519,20 @@ int ObTextRetrievalDaaTTokenIter::get_next_row() {
   return ret;
 }
 
+int ObTextRetrievalDaaTTokenIter::eval_batch_with_skip(sql::ObExpr *expr, const int64_t count)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(expr) || OB_ISNULL(token_iter_) || OB_ISNULL(eval_ctx_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_ISNULL(token_iter_->get_skip())) {
+    // only a path that needs no score can get here without a vector; it must not be read as null
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("skip vector is null", K(ret), K(count));
+  } else if (OB_FAIL(expr->eval_batch(*eval_ctx_, *token_iter_->get_skip(), count))) {
+  }
+  return ret;
+}
+
 int ObTextRetrievalDaaTTokenIter::save_relevances_and_docids()
 {
   int ret = OB_SUCCESS;
@@ -520,20 +549,20 @@ int ObTextRetrievalDaaTTokenIter::save_relevances_and_docids()
     cur_idx_ = 0;
     const ObDatumVector &doc_id_datum = inv_scan_domain_id_col_->locate_expr_datumvector(*eval_ctx_);
     for (int64_t i = 0; OB_SUCC(ret) && i < count_; ++i) {
-      if (OB_LIKELY(!token_iter_->get_skip()->at(i))) {
+      if (OB_LIKELY(!token_iter_->row_is_skipped(i))) {
         relevance_[i] = 1.0;
         if (OB_FAIL(doc_id_[i].from_datum(*doc_id_datum.at(i)))) {
         }
       }
     }
 #endif
-  } else if (OB_FAIL(relevance_expr_->eval_batch(*eval_ctx_, *token_iter_->get_skip(), count_))) {
+  } else if (OB_FAIL(eval_batch_with_skip(relevance_expr_, count_))) {
   } else {
     cur_idx_ = 0;
     const ObDatumVector &relevance_datum = relevance_expr_->locate_expr_datumvector(*eval_ctx_);
     const ObDatumVector &doc_id_datum = inv_scan_domain_id_col_->locate_expr_datumvector(*eval_ctx_);
     for (int64_t i = 0; OB_SUCC(ret) && i < count_; ++i) {
-      if (OB_LIKELY(!token_iter_->get_skip()->at(i))) {
+      if (OB_LIKELY(!token_iter_->row_is_skipped(i))) {
         relevance_[i] = relevance_datum.at(i)->get_double();
         if (OB_FAIL(doc_id_[i].from_datum(*doc_id_datum.at(i)))) {
         }
@@ -552,7 +581,7 @@ int ObTextRetrievalDaaTTokenIter::save_docids()
     cur_idx_ = 0;
     const ObDatumVector &doc_id_datum = inv_scan_domain_id_col_->locate_expr_datumvector(*eval_ctx_);
     for (int64_t i = 0; OB_SUCC(ret) && i < count_; ++i) {
-      if (OB_LIKELY(!token_iter_->get_skip()->at(i))) {
+      if (OB_LIKELY(!token_iter_->row_is_skipped(i))) {
         if (OB_FAIL(doc_id_[i].from_datum(*doc_id_datum.at(i)))) {
         };
       }
