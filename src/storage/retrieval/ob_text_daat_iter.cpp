@@ -183,7 +183,11 @@ int ObTextDaaTIter::pre_process()
   int ret = OB_SUCCESS;
   if (dim_iters_->count() == 0) {
     ret = OB_ITER_END;
-  } else if (iter_param_->need_project_relevance()) {
+  } else if (iter_param_->need_project_relevance() && !iter_param_->bool_relevance_only_) {
+    // The only consumer of the estimated parameters is the BM25 expression, and a boolean relevance
+    // never evaluates it (the token iterators skip score computation for that case), so the
+    // estimate - which scans the skip index of the whole inverted index once per query - would be
+    // work whose result is never read. There is no consumer of the estimated parameter here.
     if (OB_FAIL(bm25_param_estimator_.do_estimation(*iter_param_->eval_ctx_))) {
     }
   }
